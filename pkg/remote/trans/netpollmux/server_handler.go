@@ -84,14 +84,15 @@ func (t *svrTransHandler) Write(ctx context.Context, conn net.Conn, sendMsg remo
 			return nil
 		}
 	}
-
-	bufWriter := np.NewWriterByteBuffer(netpoll.NewLinkBuffer())
+	buf := netpoll.NewLinkBuffer()
+	bufWriter := np.NewWriterByteBuffer(buf)
 	err = t.codec.Encode(ctx, sendMsg, bufWriter)
+	bufWriter.Release(err)
 	if err != nil {
 		return err
 	}
-	conn.(*muxSvrConn).Put(func() (buf remote.ByteBuffer, isNil bool) {
-		return bufWriter, false
+	conn.(*muxSvrConn).Put(func() (buf netpoll.Writer, isNil bool) {
+		return buf, false
 	})
 	return nil
 }
