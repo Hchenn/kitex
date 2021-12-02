@@ -23,12 +23,12 @@ import (
 	"github.com/cloudwego/netpoll"
 
 	"github.com/cloudwego/kitex/pkg/gofunc"
-	"github.com/cloudwego/kitex/pkg/remote"
-	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
+	// "github.com/cloudwego/kitex/pkg/remote"
+	// np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 )
 
 // BufferGetter is used to get a remote.ByteBuffer.
-type BufferGetter func() (buf remote.ByteBuffer, isNil bool)
+type BufferGetter func() (buf netpoll.Writer, isNil bool)
 
 // DealBufferGetters is used to get deal of remote.ByteBuffer.
 type DealBufferGetters func(gts []BufferGetter)
@@ -37,11 +37,11 @@ type DealBufferGetters func(gts []BufferGetter)
 type FlushBufferGetters func()
 
 func newSharedQueue(size int32, conn netpoll.Connection) (queue *sharedQueue) {
-	writer := np.NewWriterByteBuffer(conn.Writer())
+	// writer := np.NewWriterByteBuffer(conn.Writer())
 	queue = &sharedQueue{
 		size:   size,
 		conn:   conn,
-		writer: writer,
+		writer: conn.Writer(),
 		// deal:    deal,
 		// flush:   flush,
 		getters: make([][]BufferGetter, size),
@@ -59,7 +59,7 @@ type sharedQueue struct {
 	// deal            DealBufferGetters
 	// flush           FlushBufferGetters
 	conn            netpoll.Connection
-	writer          remote.ByteBuffer
+	writer          netpoll.Writer
 	getters         [][]BufferGetter // len(getters) = size
 	swap            []BufferGetter   // use for swap
 	locks           []int32          // len(locks) = size
@@ -123,12 +123,12 @@ func (q *sharedQueue) ForEach(shared int32) {
 // deal is used to get deal of netpoll.Writer.
 func (q *sharedQueue) deal(gts []BufferGetter) {
 	var err error
-	var buf remote.ByteBuffer
+	var buf netpoll.Writer
 	var isNil bool
 	for _, gt := range gts {
 		buf, isNil = gt()
 		if !isNil {
-			err = q.writer.AppendBuffer(buf)
+			err = q.writer.Append(buf)
 			if err != nil {
 				q.conn.Close()
 				return
