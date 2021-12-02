@@ -20,8 +20,11 @@ import (
 	"runtime"
 	"sync/atomic"
 
+	"github.com/cloudwego/netpoll"
+
 	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/remote"
+	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 )
 
 // BufferGetter is used to get a remote.ByteBuffer.
@@ -33,11 +36,14 @@ type DealBufferGetters func(gts []BufferGetter)
 // FlushBufferGetters is used to flush remote.ByteBuffer.
 type FlushBufferGetters func()
 
-func newSharedQueue(size int32, deal DealBufferGetters, flush FlushBufferGetters) (queue *sharedQueue) {
+func newSharedQueue(size int32, conn netpoll.Connection) (queue *sharedQueue) {
+	writer := np.NewWriterByteBuffer(conn.Writer())
 	queue = &sharedQueue{
-		size:    size,
-		deal:    deal,
-		flush:   flush,
+		size:   size,
+		conn:   conn,
+		writer: writer,
+		// deal:    deal,
+		// flush:   flush,
 		getters: make([][]BufferGetter, size),
 		swap:    make([]BufferGetter, 0, 64),
 		locks:   make([]int32, size),
@@ -49,9 +55,11 @@ func newSharedQueue(size int32, deal DealBufferGetters, flush FlushBufferGetters
 }
 
 type sharedQueue struct {
-	idx, size       int32
-	deal            DealBufferGetters
-	flush           FlushBufferGetters
+	idx, size int32
+	// deal            DealBufferGetters
+	// flush           FlushBufferGetters
+	conn            netpoll.Connection
+	writer          remote.ByteBuffer
 	getters         [][]BufferGetter // len(getters) = size
 	swap            []BufferGetter   // use for swap
 	locks           []int32          // len(locks) = size
@@ -102,9 +110,7 @@ func (q *sharedQueue) ForEach(shared int32) {
 			// deal
 			q.deal(q.swap)
 		}
-		if q.flush != nil {
-			q.flush()
-		}
+		q.flush()
 
 		// quit & check again
 		atomic.StoreInt32(&q.runNum, 0)
@@ -112,6 +118,32 @@ func (q *sharedQueue) ForEach(shared int32) {
 			q.ForEach(shared)
 		}
 	})
+}
+
+// deal is used to get deal of netpoll.Writer.
+func (q *sharedQueue) deal(gts []BufferGetter) {
+	var err error
+	var buf remote.ByteBuffer
+	var isNil bool
+	for _, gt := range gts {
+		buf, isNil = gt()
+		if !isNil {
+			err = q.writer.AppendBuffer(buf)
+			if err != nil {
+				q.conn.Close()
+				return
+			}
+		}
+	}
+}
+
+// flush is used to flush netpoll.Writer.
+func (q *sharedQueue) flush() {
+	err := q.writer.Flush()
+	if err != nil {
+		q.conn.Close()
+		return
+	}
 }
 
 // Lock locks shared.

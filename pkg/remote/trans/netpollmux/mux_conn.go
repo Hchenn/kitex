@@ -27,7 +27,6 @@ import (
 
 	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/klog"
-	"github.com/cloudwego/kitex/pkg/remote"
 	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 )
 
@@ -113,28 +112,7 @@ type muxSvrConn struct {
 func newMuxConn(connection netpoll.Connection) muxConn {
 	c := muxConn{}
 	c.Connection = connection
-	writer := np.NewWriterByteBuffer(connection.Writer())
-	c.sharedQueue = newSharedQueue(SharedSize, func(gts []BufferGetter) {
-		var err error
-		var buf remote.ByteBuffer
-		var isNil bool
-		for _, gt := range gts {
-			buf, isNil = gt()
-			if !isNil {
-				err = writer.AppendBuffer(buf)
-				if err != nil {
-					connection.Close()
-					return
-				}
-			}
-		}
-	}, func() {
-		err := writer.Flush()
-		if err != nil {
-			connection.Close()
-			return
-		}
-	})
+	c.sharedQueue = newSharedQueue(SharedSize, connection)
 	return c
 }
 
