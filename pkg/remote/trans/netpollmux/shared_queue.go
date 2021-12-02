@@ -92,8 +92,7 @@ func (q *sharedQueue) ForEach(shared int32) {
 		return
 	}
 	gofunc.GoFunc(nil, func() {
-		var tmp []BufferGetter
-		for ; atomic.LoadInt32(&q.trigger) > 0; shared = (shared + 1) % q.size {
+		for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; shared = (shared + 1) % q.size {
 			// lock & swap
 			q.Lock(shared)
 			if len(q.getters[shared]) == 0 {
@@ -101,14 +100,13 @@ func (q *sharedQueue) ForEach(shared int32) {
 				continue
 			}
 			// swap
-			tmp = q.getters[shared]
+			tmp := q.getters[shared]
 			q.getters[shared] = q.swap[:0]
 			q.swap = tmp
 			q.Unlock(shared)
-			atomic.AddInt32(&q.trigger, -1)
-
 			// deal
 			q.deal(q.swap)
+			ntr = atomic.AddInt32(&q.trigger, -1)
 		}
 		q.flush()
 
