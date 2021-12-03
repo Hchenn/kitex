@@ -17,8 +17,11 @@
 package netpollmux
 
 import (
+	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cloudwego/netpoll"
 
@@ -51,10 +54,33 @@ func newSharedQueue(size int32, conn netpoll.Connection) (queue *sharedQueue) {
 	for i := range queue.getters {
 		queue.getters[i] = make([]BufferGetter, 0, 64)
 	}
+	queue.refresh()
+	queue.listsize = uint32(size + 1)
+	queue.list = make([]int32, queue.listsize)
+	// queue.chch = make(chan int32, queue.size)
 	return queue
 }
 
+type debugs struct {
+	lockconflict int32
+	zeroshard    int32
+}
+
+func (d *debugs) refresh() {
+	go func() {
+		for range time.Tick(time.Second) {
+			cft := atomic.LoadInt32(&d.lockconflict)
+			zs := atomic.LoadInt32(&d.zeroshard)
+
+			fmt.Printf("lock conflict = %d, zero shard = %d\n", cft, zs)
+			atomic.AddInt32(&d.lockconflict, -cft)
+			atomic.AddInt32(&d.zeroshard, -zs)
+		}
+	}()
+}
+
 type sharedQueue struct {
+	debugs
 	idx, size int32
 	// deal            DealBufferGetters
 	// flush           FlushBufferGetters
@@ -64,10 +90,15 @@ type sharedQueue struct {
 	swap            []BufferGetter   // use for swap
 	locks           []int32          // len(locks) = size
 	trigger, runNum int32
+	w, r, listsize  uint32
+	list            []int32
+	lock            sync.RWMutex
+	// chch            chan int32
 }
 
 // Add adds to q.getters[shared]
 func (q *sharedQueue) Add(gts ...BufferGetter) {
+	// shared := q.trylock()
 	shared := atomic.AddInt32(&q.idx, 1) % q.size
 	q.Lock(shared)
 	trigger := len(q.getters[shared]) == 0
@@ -80,6 +111,11 @@ func (q *sharedQueue) Add(gts ...BufferGetter) {
 
 // Trigger triggers shared
 func (q *sharedQueue) Trigger(shared int32) {
+	q.lock.RLock()
+	idx := atomic.AddUint32(&q.w, 1) % q.listsize
+	q.list[idx] = shared
+	q.lock.RUnlock()
+	// q.chch <- shared
 	if atomic.AddInt32(&q.trigger, 1) > 1 {
 		return
 	}
@@ -92,11 +128,21 @@ func (q *sharedQueue) ForEach(shared int32) {
 		return
 	}
 	gofunc.GoFunc(nil, func() {
-		for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; shared = (shared + 1) % q.size {
+		// for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; shared = (shared + 1) % q.size {
+
+		for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; {
+			// shared = <-q.chch
+			q.lock.Lock()
+			q.r = (q.r + 1) % q.listsize
+			shared = q.list[q.r]
+			q.lock.Unlock()
+
 			// lock & swap
 			q.Lock(shared)
 			if len(q.getters[shared]) == 0 {
 				q.Unlock(shared)
+				atomic.AddInt32(&q.zeroshard, 1)
+				// fmt.Printf("DEBUG: shard[%d] realy is 0\n", shared)
 				continue
 			}
 			// swap
@@ -145,8 +191,19 @@ func (q *sharedQueue) flush() {
 }
 
 // Lock locks shared.
+func (q *sharedQueue) trylock() (shared int32) {
+	for {
+		shared = atomic.AddInt32(&q.idx, 1) % q.size
+		if atomic.CompareAndSwapInt32(&q.locks[shared], 0, 1) {
+			return shared
+		}
+	}
+}
+
+// Lock locks shared.
 func (q *sharedQueue) Lock(shared int32) {
 	for !atomic.CompareAndSwapInt32(&q.locks[shared], 0, 1) {
+		atomic.AddInt32(&q.lockconflict, 1)
 		runtime.Gosched()
 	}
 }
