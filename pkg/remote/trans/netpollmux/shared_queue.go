@@ -111,10 +111,11 @@ func (q *sharedQueue) Add(gts ...BufferGetter) {
 
 // Trigger triggers shared
 func (q *sharedQueue) Trigger(shared int32) {
-	q.lock.RLock()
-	idx := atomic.AddUint32(&q.w, 1) % q.listsize
-	q.list[idx] = shared
-	q.lock.RUnlock()
+	q.lock.Lock()
+	// idx := atomic.AddUint32(&q.w, 1) % q.listsize
+	q.w = (q.w + 1) % q.listsize
+	q.list[q.w] = shared
+	q.lock.Unlock()
 	// q.chch <- shared
 	if atomic.AddInt32(&q.trigger, 1) > 1 {
 		return
@@ -129,7 +130,6 @@ func (q *sharedQueue) ForEach(shared int32) {
 	}
 	gofunc.GoFunc(nil, func() {
 		// for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; shared = (shared + 1) % q.size {
-
 		for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; {
 			// shared = <-q.chch
 			q.lock.Lock()
