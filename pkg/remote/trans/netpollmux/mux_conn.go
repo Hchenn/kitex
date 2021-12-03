@@ -26,7 +26,6 @@ import (
 
 	"github.com/cloudwego/netpoll"
 
-	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/klog"
 	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 )
@@ -65,7 +64,7 @@ func (c *muxCliConn) OnRequest(ctx context.Context, connection netpoll.Connectio
 		err = fmt.Errorf("mux read package slice failed: addr(%s), %w", connection.RemoteAddr(), err)
 		return c.onError(err, connection)
 	}
-	gofunc.GoFunc(ctx, func() {
+	go func() {
 		asyncCallback, ok := c.seqIDMap.load(seqID)
 		if !ok {
 			reader.(io.Closer).Close()
@@ -73,7 +72,7 @@ func (c *muxCliConn) OnRequest(ctx context.Context, connection netpoll.Connectio
 		}
 		bufReader := np.NewReaderByteBuffer(reader)
 		asyncCallback.Recv(bufReader, nil)
-	})
+	}()
 	return nil
 }
 
