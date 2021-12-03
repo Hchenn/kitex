@@ -92,7 +92,7 @@ type sharedQueue struct {
 	trigger, runNum int32
 	w, r, listsize  uint32
 	list            []int32
-	lock            sync.RWMutex
+	lock            sync.Mutex
 	// chch            chan int32
 }
 
@@ -130,31 +130,55 @@ func (q *sharedQueue) ForEach(shared int32) {
 	}
 	gofunc.GoFunc(nil, func() {
 		// for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; shared = (shared + 1) % q.size {
+		var posntr int32
 		for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; {
-			// shared = <-q.chch
-			q.lock.Lock()
+			// q.lock.Lock()
 			q.r = (q.r + 1) % q.listsize
 			shared = q.list[q.r]
-			q.lock.Unlock()
+			// q.lock.Unlock()
 
-			// lock & swap
-			q.Lock(shared)
-			if len(q.getters[shared]) == 0 {
-				q.Unlock(shared)
-				atomic.AddInt32(&q.zeroshard, 1)
-				// fmt.Printf("DEBUG: shard[%d] realy is 0\n", shared)
-				continue
-			}
 			// swap
+			q.Lock(shared)
 			tmp := q.getters[shared]
 			q.getters[shared] = q.swap[:0]
 			q.swap = tmp
 			q.Unlock(shared)
 			// deal
 			q.deal(q.swap)
-			ntr = atomic.AddInt32(&q.trigger, -1)
+			// ntr = atomic.AddInt32(&q.trigger, -1)
+			posntr--
+			if ntr+posntr == 0 {
+				ntr = atomic.AddInt32(&q.trigger, posntr)
+				posntr = 0
+			}
 		}
 		q.flush()
+
+		// for ntr := atomic.LoadInt32(&q.trigger); ntr > 0; {
+		// 	// shared = <-q.chch
+		// 	q.lock.Lock()
+		// 	q.r = (q.r + 1) % q.listsize
+		// 	shared = q.list[q.r]
+		// 	q.lock.Unlock()
+		//
+		// 	// lock & swap
+		// 	q.Lock(shared)
+		// 	if len(q.getters[shared]) == 0 {
+		// 		q.Unlock(shared)
+		// 		atomic.AddInt32(&q.zeroshard, 1)
+		// 		// fmt.Printf("DEBUG: shard[%d] realy is 0\n", shared)
+		// 		continue
+		// 	}
+		// 	// swap
+		// 	tmp := q.getters[shared]
+		// 	q.getters[shared] = q.swap[:0]
+		// 	q.swap = tmp
+		// 	q.Unlock(shared)
+		// 	// deal
+		// 	q.deal(q.swap)
+		// 	ntr = atomic.AddInt32(&q.trigger, -1)
+		// }
+		// q.flush()
 
 		// quit & check again
 		atomic.StoreInt32(&q.runNum, 0)
