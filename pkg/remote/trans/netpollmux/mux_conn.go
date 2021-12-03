@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 
 	"github.com/cloudwego/netpoll"
@@ -34,7 +35,7 @@ import (
 var ErrConnClosed = errors.New("conn closed")
 
 // SharedSize .
-var SharedSize int32 = 32
+var SharedSize int32 = int32(runtime.GOMAXPROCS(0) * 1)
 
 func newMuxCliConn(connection netpoll.Connection) *muxCliConn {
 	c := &muxCliConn{
@@ -52,27 +53,36 @@ type muxCliConn struct {
 
 // OnRequest is called when the connection creates.
 func (c *muxCliConn) OnRequest(ctx context.Context, connection netpoll.Connection) (err error) {
-	// check protocol header
-	length, seqID, err := parseHeader(connection.Reader())
-	if err != nil {
-		err = fmt.Errorf("%w: addr(%s)", err, connection.RemoteAddr())
-		return c.onError(err, connection)
-	}
-	// reader is nil if return error
-	reader, err := connection.Reader().Slice(length)
-	if err != nil {
-		err = fmt.Errorf("mux read package slice failed: addr(%s), %w", connection.RemoteAddr(), err)
-		return c.onError(err, connection)
-	}
-	go func() {
-		asyncCallback, ok := c.seqIDMap.load(seqID)
-		if !ok {
-			reader.(io.Closer).Close()
-			return
+	var benchrecv int
+	r := connection.Reader()
+	for total := r.Len(); total > 0; total = r.Len() {
+		// check protocol header
+		length, seqID, err := parseHeader(r)
+		if err != nil {
+			err = fmt.Errorf("%w: addr(%s)", err, connection.RemoteAddr())
+			return c.onError(err, connection)
 		}
-		bufReader := np.NewReaderByteBuffer(reader)
-		asyncCallback.Recv(bufReader, nil)
-	}()
+		benchrecv++
+		if total < length {
+			// fmt.Printf("DEBUG: benchrecv = %d\n", benchrecv)
+			benchrecv = 0
+		}
+		// reader is nil if return error
+		reader, err := r.Slice(length)
+		if err != nil {
+			err = fmt.Errorf("mux read package slice failed: addr(%s), %w", connection.RemoteAddr(), err)
+			return c.onError(err, connection)
+		}
+		go func() {
+			asyncCallback, ok := c.seqIDMap.load(seqID)
+			if !ok {
+				reader.(io.Closer).Close()
+				return
+			}
+			bufReader := np.NewReaderByteBuffer(reader)
+			asyncCallback.Recv(bufReader, nil)
+		}()
+	}
 	return nil
 }
 
