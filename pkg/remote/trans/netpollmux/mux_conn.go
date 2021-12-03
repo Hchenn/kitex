@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 
@@ -58,12 +59,6 @@ func (c *muxCliConn) OnRequest(ctx context.Context, connection netpoll.Connectio
 		err = fmt.Errorf("%w: addr(%s)", err, connection.RemoteAddr())
 		return c.onError(err, connection)
 	}
-	asyncCallback, ok := c.seqIDMap.load(seqID)
-	if !ok {
-		connection.Reader().Skip(length)
-		connection.Reader().Release()
-		return
-	}
 	// reader is nil if return error
 	reader, err := connection.Reader().Slice(length)
 	if err != nil {
@@ -71,6 +66,11 @@ func (c *muxCliConn) OnRequest(ctx context.Context, connection netpoll.Connectio
 		return c.onError(err, connection)
 	}
 	gofunc.GoFunc(ctx, func() {
+		asyncCallback, ok := c.seqIDMap.load(seqID)
+		if !ok {
+			reader.(io.Closer).Close()
+			return
+		}
 		bufReader := np.NewReaderByteBuffer(reader)
 		asyncCallback.Recv(bufReader, nil)
 	})
