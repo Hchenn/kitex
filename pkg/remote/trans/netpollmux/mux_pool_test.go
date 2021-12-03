@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,4 +284,110 @@ func BenchmarkMuxPoolGetRand2000Mesh(b *testing.B) {
 			p.Get(context.TODO(), "tcp", addrs[rand.Intn(2000)], opt)
 		}
 	})
+}
+
+func BenchmarkRW_MUX(b *testing.B) {
+	var p = 128
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var ch = make(chan int32, p)
+	go func() {
+		defer wg.Done()
+		for {
+			_, active := <-ch
+			if !active {
+				return
+			}
+		}
+	}()
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.SetParallelism(p)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			ch <- 1
+		}
+	})
+	close(ch)
+	wg.Wait()
+}
+
+func BenchmarkRW_LockList(b *testing.B) {
+	var p = 128
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var stop = make(chan int)
+	var l1 = make([]int32, 0, p)
+
+	var lock sync.RWMutex
+	go func() {
+		defer wg.Done()
+		var l2 = make([]int32, 0, p)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			lock.Lock()
+			// swap
+			tmp := l1
+			l1 = l2[:0]
+			l2 = tmp
+			lock.Unlock()
+		}
+	}()
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.SetParallelism(p)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			lock.Lock()
+			l1 = append(l1, 1)
+			lock.Unlock()
+		}
+	})
+	close(stop)
+	wg.Wait()
+}
+
+func BenchmarkRW_RWLock(b *testing.B) {
+	var p = 128
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var stop = make(chan int)
+	var l1 = make([]int32, p)
+
+	var lock sync.RWMutex
+	go func() {
+		defer wg.Done()
+		var l2 = make([]int32, p)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			lock.Lock()
+			// swap
+			tmp := l1
+			l1 = l2[:]
+			l2 = tmp
+			lock.Unlock()
+		}
+	}()
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.SetParallelism(p)
+	b.RunParallel(func(pb *testing.PB) {
+		var idx int32 = 0
+		for pb.Next() {
+			lock.RLock()
+			_idx := atomic.AddInt32(&idx, 1) % 128
+			l1[_idx] = 1
+			lock.RUnlock()
+		}
+	})
+	close(stop)
+	wg.Wait()
 }
