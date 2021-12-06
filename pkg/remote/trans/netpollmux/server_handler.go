@@ -20,7 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/cloudwego/kitex/pkg/gofunc"
+	"github.com/bytedance/gopkg/util/gopool"
 	"net"
 	"runtime/debug"
 	"sync"
@@ -150,10 +150,10 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 		fmt.Printf("DEBUG 1: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
 		if total < length && len(fs) > 0 {
 			fmt.Printf("DEBUG 2: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
-			for _, f := range fs {
-				gofunc.GoFunc(muxSvrConnCtx, f)
-			}
-			// gopool.BenchGos(muxSvrConnCtx, fs...)
+			// for _, f := range fs {
+			// 	gofunc.GoFunc(muxSvrConnCtx, f)
+			// }
+			gopool.BenchGos(muxSvrConnCtx, fs...)
 			fs = fs[:0]
 			// runtime.Gosched()
 		}
@@ -172,10 +172,10 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	}
 	if len(fs) > 0 {
 		fmt.Printf("DEBUG 3: len(fs)=%d\n", len(fs))
-		for _, f := range fs {
-			gofunc.GoFunc(muxSvrConnCtx, f)
-		}
-		// gopool.BenchGos(muxSvrConnCtx, fs...)
+		// for _, f := range fs {
+		// 	gofunc.GoFunc(muxSvrConnCtx, f)
+		// }
+		gopool.BenchGos(muxSvrConnCtx, fs...)
 		fs = fs[:0]
 		// runtime.Gosched()
 	}
