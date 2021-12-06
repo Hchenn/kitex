@@ -21,10 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/cloudwego/kitex/internal/wpool"
 	"github.com/cloudwego/kitex/pkg/gofunc"
 	"net"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/netpoll"
 
@@ -207,13 +209,20 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	return nil
 }
 
+var testpool = wpool.New(100, time.Minute)
+
 func (t *svrTransHandler) benches(fs []func()) {
-	var i = len(fs) % 4
+	for n := range fs {
+		testpool.Go(fs[n])
+	}
+	return
+	var b = 4
+	var i = len(fs) % b
 	for k := 0; k < i; k++ {
 		gofunc.GoFunc(nil, fs[k])
 	}
-	for ; i < len(fs); i += 4 {
-		gopool.BenchGos(nil, fs[i:i+4]...)
+	for ; i < len(fs); i += b {
+		gopool.BenchGos(nil, fs[i:i+b]...)
 	}
 }
 
