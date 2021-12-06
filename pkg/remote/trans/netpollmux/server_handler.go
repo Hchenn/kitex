@@ -63,19 +63,22 @@ func newSvrTransHandler(opt *remote.ServerOption) (*svrTransHandler, error) {
 		// init TraceCtl when it is nil, or it will lead some unit tests panic
 		svrHdlr.opt.TracerCtl = &stats2.Controller{}
 	}
+	svrHdlr.listpool.New = func() interface{} {
+		return make([]func(), 0, 64)
+	}
 	return svrHdlr, nil
 }
 
 var _ remote.ServerTransHandler = &svrTransHandler{}
 
 type svrTransHandler struct {
-	opt           *remote.ServerOption
-	svcInfo       *serviceinfo.ServiceInfo
-	inkHdlFunc    endpoint.Endpoint
-	codec         remote.Codec
-	transPipe     *remote.TransPipeline
-	ext           trans.Extension
-	benchFuncSize int
+	opt        *remote.ServerOption
+	svcInfo    *serviceinfo.ServiceInfo
+	inkHdlFunc endpoint.Endpoint
+	codec      remote.Codec
+	transPipe  *remote.TransPipeline
+	ext        trans.Extension
+	listpool   sync.Pool
 }
 
 // Write implements the remote.ServerTransHandler interface.
@@ -136,7 +139,7 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	connection := conn.(netpoll.Connection)
 	r := connection.Reader()
 
-	var fs = make([]func(), 0, t.benchFuncSize)
+	var fs = t.listpool.Get().([]func())
 	for total := r.Len(); total > 0; total = r.Len() {
 		// protocol header check
 		length, _, err := parseHeader(r)
@@ -148,10 +151,11 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 		}
 		if total < length && len(fs) > 0 {
 			go t.benches(fs)
-			if l := len(fs); l > t.benchFuncSize {
-				t.benchFuncSize = l
-			}
-			fs = make([]func(), 0, t.benchFuncSize)
+			// if l := len(fs); l > t.benchFuncSize {
+			// 	t.benchFuncSize = l
+			// }
+			// fs = make([]func(), 0, t.benchFuncSize)
+			fs = t.listpool.Get().([]func())
 		}
 		reader, err := r.Slice(length)
 		if err != nil {
@@ -166,6 +170,8 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	}
 	if len(fs) > 0 {
 		go t.benches(fs)
+	} else {
+		t.listpool.Put(fs)
 	}
 	return nil
 }
@@ -174,6 +180,7 @@ func (t *svrTransHandler) benches(fs []func()) {
 	for n := range fs {
 		gofunc.GoFunc(nil, fs[n])
 	}
+	t.listpool.Put(fs)
 }
 
 func (t *svrTransHandler) task(muxSvrConnCtx context.Context, conn net.Conn, reader netpoll.Reader) {
