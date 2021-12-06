@@ -140,7 +140,7 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	r := connection.Reader()
 	// fmt.Printf("DEBUG 0: onread here\n")
 
-	var fs = make([]func(), 0, 64)
+	var fs = make([]func(), 0, 128)
 	for total := r.Len(); total > 0; total = r.Len() {
 		// protocol header check
 		length, _, err := parseHeader(r)
@@ -153,8 +153,9 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 		// fmt.Printf("DEBUG 1: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
 		if total < length && len(fs) > 0 {
 			// fmt.Printf("DEBUG 2: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
-			t.benches(fs)
-			fs = fs[:0]
+			go t.benches(fs)
+			fs = make([]func(), 0, 128)
+			// fs = fs[:0]
 			// runtime.Gosched()
 		}
 		reader, err := r.Slice(length)
@@ -172,8 +173,8 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	}
 	if len(fs) > 0 {
 		// fmt.Printf("DEBUG 3: len(fs)=%d\n", len(fs))
-		t.benches(fs)
-		fs = fs[:0]
+		go t.benches(fs)
+		// fs = fs[:0]
 		// runtime.Gosched()
 	}
 	// var fs = make([]func(), 0, 64)
@@ -212,6 +213,10 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 var testpool = wpool.New(100, time.Minute)
 
 func (t *svrTransHandler) benches(fs []func()) {
+	for n := range fs {
+		gofunc.GoFunc(nil, fs[n])
+	}
+	return
 	for n := range fs {
 		testpool.Go(fs[n])
 	}
