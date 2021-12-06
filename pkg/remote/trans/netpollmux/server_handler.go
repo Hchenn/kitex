@@ -149,8 +149,12 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 		}
 		fmt.Printf("DEBUG 1: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
 		if total < length && len(fs) > 0 {
+			fmt.Printf("DEBUG 2: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
+			for _, f := range fs {
+				gofunc.GoFunc(muxSvrConnCtx, f)
+			}
 			// gopool.BenchGos(muxSvrConnCtx, fs...)
-			// fs = fs[:0]
+			fs = fs[:0]
 			// runtime.Gosched()
 		}
 		reader, err := r.Slice(length)
@@ -161,11 +165,10 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 			return nil
 		}
 		// }
-		// fs = append(fs, func() {
-		gofunc.GoFunc(muxSvrConnCtx, func() {
+		fs = append(fs, func() {
+			// gofunc.GoFunc(muxSvrConnCtx, func() {
 			t.task(muxSvrConnCtx, conn, reader)
 		})
-		fmt.Printf("DEBUG 2: total=%d, length=%d, len(fs)=%d\n", total, length, len(fs))
 	}
 	// var fs = make([]func(), 0, 64)
 	// for total := r.Len(); total > 0; total = r.Len() {
