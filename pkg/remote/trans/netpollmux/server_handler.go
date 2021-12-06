@@ -171,7 +171,7 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 	if len(fs) > 0 {
 		go t.benches(fs)
 	} else {
-		t.listpool.Put(fs)
+		t.listpool.Put(fs[:0])
 	}
 	return nil
 }
@@ -180,7 +180,7 @@ func (t *svrTransHandler) benches(fs []func()) {
 	for n := range fs {
 		gofunc.GoFunc(nil, fs[n])
 	}
-	t.listpool.Put(fs)
+	t.listpool.Put(fs[:0])
 }
 
 func (t *svrTransHandler) task(muxSvrConnCtx context.Context, conn net.Conn, reader netpoll.Reader) {
