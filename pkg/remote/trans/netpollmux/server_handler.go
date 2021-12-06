@@ -170,6 +170,15 @@ func (t *svrTransHandler) OnRead(muxSvrConnCtx context.Context, conn net.Conn) e
 			t.task(muxSvrConnCtx, conn, reader)
 		})
 	}
+	if len(fs) > 0 {
+		fmt.Printf("DEBUG 3: len(fs)=%d\n", len(fs))
+		for _, f := range fs {
+			gofunc.GoFunc(muxSvrConnCtx, f)
+		}
+		// gopool.BenchGos(muxSvrConnCtx, fs...)
+		fs = fs[:0]
+		// runtime.Gosched()
+	}
 	// var fs = make([]func(), 0, 64)
 	// for total := r.Len(); total > 0; total = r.Len() {
 	// 	// protocol header check
