@@ -57,20 +57,29 @@ func (mp *MuxPool) Get(ctx context.Context, network, address string, opt remote.
 		}
 	}
 	connection, err, _ := mp.sfg.Do(address, func() (i interface{}, e error) {
-		conn, err := opt.Dialer.DialTimeout(network, address, opt.ConnectTimeout)
-		if err != nil {
-			return nil, err
-		}
-		connection := newMuxCliConn(conn.(netpoll.Connection))
 		var cs *conns
 		if ok {
 			cs = v.(*conns)
 		} else {
 			cs = &conns{size: mp.size, conns: make([]*muxCliConn, mp.size)}
 		}
-		cs.put(connection)
+		for i := 0; i < int(cs.size); i++ {
+			if cs.conns[i] != nil {
+				if cs.conns[i].IsActive() {
+					continue
+				}
+				cs.conns[i].close()
+			}
+			conn, err := opt.Dialer.DialTimeout(network, address, opt.ConnectTimeout)
+			if err != nil {
+				return nil, err
+			}
+			connection := newMuxCliConn(conn.(netpoll.Connection))
+			cs.conns[i] = connection
+		}
+		// cs.put(connection)
 		mp.connMap.Store(address, cs)
-		return connection, nil
+		return cs.conns[0], nil
 	})
 	if err != nil {
 		return nil, err
