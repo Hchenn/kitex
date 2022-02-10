@@ -18,7 +18,9 @@ package trans
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"testing"
 
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
@@ -241,4 +243,30 @@ func (m *MockMessage) Recycle() {
 	if m.RecycleFunc != nil {
 		m.RecycleFunc()
 	}
+}
+
+func TestA(t *testing.T) {
+	var _num Number
+	var _type int8
+	_num, _type = get()
+	if _type == BytesType {
+		fmt.Printf("number=%d, type=%d\n", _num, _type)
+	}
+	fmt.Printf("number=%d, type=%d\n", _num, _type)
+}
+
+type Number int32
+type Type int8
+
+const (
+	VarintType     Type = 0
+	Fixed32Type    Type = 5
+	Fixed64Type    Type = 1
+	BytesType      Type = 2
+	StartGroupType Type = 3
+	EndGroupType   Type = 4
+)
+
+func get() (Number, int8) {
+	return 1, 2
 }

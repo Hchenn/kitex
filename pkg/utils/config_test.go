@@ -17,9 +17,11 @@
 package utils
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/kitex/internal/test"
 )
@@ -52,4 +54,17 @@ func TestGetLogDir(t *testing.T) {
 	os.Setenv(EnvLogDir, "")
 	logDir = GetLogDir()
 	test.Assert(t, logDir == DefaultLogDir)
+}
+
+func TestChannel(t *testing.T) {
+	var ch = make(chan int)
+	go func() {
+		for {
+			v, ok := <-ch
+			fmt.Printf("v=%d, ok=%t\n", v, ok)
+		}
+	}()
+	ch <- 1
+	close(ch)
+	time.Sleep(time.Second)
 }
