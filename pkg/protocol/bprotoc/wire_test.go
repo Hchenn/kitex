@@ -2,8 +2,9 @@ package bprotoc
 
 import (
 	"fmt"
-	"google.golang.org/protobuf/encoding/protowire"
 	"testing"
+
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // [fa0f00]

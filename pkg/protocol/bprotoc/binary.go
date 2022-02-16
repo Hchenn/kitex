@@ -17,27 +17,23 @@
 package bprotoc
 
 import (
-	"math"
-
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"math"
 )
 
 // Binary protocol for bthrift.
 var Binary binaryProtocol
-
-var _ BProtocol = binaryProtocol{}
-
-const binaryInplaceThreshold = 4096 // 4k
-
-type binaryProtocol struct{}
 
 // When encoding length-prefixed fields, we speculatively set aside some number of bytes
 // for the length, encode the data, and then encode the length (shifting the data if necessary
 // to make room).
 const speculativeLength = 1
 
-// TODO:
+var _ BProtocol = binaryProtocol{}
+
+type binaryProtocol struct{}
+
 // *struct 应该没有 packed(只写 len+val); 因此只需要实现 tag+len+val 和 val 两种;
 // 此处不同于其他类型, 其他类型均实现了 tag+len+val 和 len+val 两种
 func (b binaryProtocol) WriteMessage(buf []byte, number int32, fastWrite FastWrite) (n int) {
@@ -56,16 +52,9 @@ func (b binaryProtocol) WriteMessage(buf []byte, number int32, fastWrite FastWri
 	// FinishSpeculativeLength
 	msiz := protowire.SizeVarint(uint64(mlen))
 	if msiz != speculativeLength {
-		// FIXME: make sure the size is full
-		//for i := 0; i < msiz-speculativeLength; i++ {
-		//	b = append(b, 0)
-		//}
 		copy(buf[msiz:], buf[prefix:prefix+mlen])
-		//buf = buf[:msiz+mlen]
-		_ = buf[:msiz+mlen] // TODO: 确认真的有
 	}
 	AppendVarint(buf[:msiz], uint64(mlen))
-
 	n += msiz + mlen
 	return n
 }
@@ -86,13 +75,7 @@ func (b binaryProtocol) WriteListPacked(buf []byte, number int32, length int, si
 	// FinishSpeculativeLength
 	msiz := protowire.SizeVarint(uint64(mlen))
 	if msiz != speculativeLength {
-		// FIXME: make sure the size is full
-		//for i := 0; i < msiz-speculativeLength; i++ {
-		//	b = append(b, 0)
-		//}
 		copy(buf[msiz:], buf[prefix:prefix+mlen])
-		//buf = buf[:msiz+mlen]
-		_ = buf[:msiz+mlen] // TODO: 确认真的有
 	}
 	AppendVarint(buf[:msiz], uint64(mlen))
 
@@ -112,13 +95,7 @@ func (b binaryProtocol) WriteMapEntry(buf []byte, number int32, entry BMarshal) 
 	// FinishSpeculativeLength
 	msiz := protowire.SizeVarint(uint64(mlen))
 	if msiz != speculativeLength {
-		// FIXME: make sure the size is full
-		//for i := 0; i < msiz-speculativeLength; i++ {
-		//	b = append(b, 0)
-		//}
 		copy(buf[msiz:], buf[prefix:prefix+mlen])
-		//buf = buf[:msiz+mlen]
-		_ = buf[:msiz+mlen] // TODO: 确认真的有
 	}
 	AppendVarint(buf[:msiz], uint64(mlen))
 
@@ -234,9 +211,9 @@ func (b binaryProtocol) WriteString(buf []byte, number int32, value string) (n i
 	if number != SkipTagNumber {
 		n += AppendTag(buf[n:], protowire.Number(number), wireTypes[protoreflect.StringKind])
 	}
-	// FIXME: todo here
-	//if strs.EnforceUTF8(fd) && !utf8.ValidString(v.String()) {
-	//	return b, errors.InvalidUTF8(string(fd.FullName()))
+	// only support proto3
+	//if EnforceUTF8() && !utf8.ValidString(value) {
+	//	panic(errInvalidUTF8)
 	//}
 	n += AppendString(buf[n:], value)
 	return n
@@ -416,9 +393,9 @@ func (b binaryProtocol) ReadString(buf []byte, _type int8) (value string, n int,
 	if n < 0 {
 		return value, 0, errDecode
 	}
-	// FIXME: ?
-	//if strs.EnforceUTF8(fd) && !utf8.Valid(v) {
-	//	return "", 0, errors.InvalidUTF8(string(fd.FullName()))
+	// only support proto3
+	//if EnforceUTF8() && !utf8.Valid(v) {
+	//	return value, 0, errInvalidUTF8
 	//}
 	return string(v), n, nil
 }
@@ -506,7 +483,6 @@ func (b binaryProtocol) ReadMapEntry(buf []byte, _type int8, umk, umv BUnmarshal
 	return offset, nil
 }
 
-// FIXME: 框架入口函数
 func (b binaryProtocol) ReadMessage(buf []byte, _type int8, fastRead FastRead) (n int, err error) {
 	wtyp := protowire.Type(_type)
 	if wtyp != SkipTypeCheck && wtyp != protowire.BytesType {
@@ -682,7 +658,6 @@ func (b binaryProtocol) SizeMessage(number int32, size FastSize) (n int) {
 	return n
 }
 
-// only tag+len+val
 func (b binaryProtocol) SizeListPacked(number int32, length int, single BSize) (n int) {
 	n += protowire.SizeVarint(protowire.EncodeTag(protowire.Number(number), wireTypes[protoreflect.BytesKind]))
 	// append mlen
@@ -694,7 +669,6 @@ func (b binaryProtocol) SizeListPacked(number int32, length int, single BSize) (
 	return n
 }
 
-// only tag+len+val
 func (b binaryProtocol) SizeMapEntry(number int32, entry BSize) (n int) {
 	n += protowire.SizeVarint(protowire.EncodeTag(protowire.Number(number), wireTypes[protoreflect.BytesKind]))
 	mlen := entry(MapEntry_Key_field_number, MapEntry_Value_field_number)

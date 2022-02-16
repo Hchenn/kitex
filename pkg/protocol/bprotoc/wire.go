@@ -24,7 +24,7 @@ const (
 	SkipTypeCheck               = protowire.Type(-1)
 )
 
-var wireTypes = map[protoreflect.Kind]protowire.Type{
+var wireTypes = []protowire.Type{
 	protoreflect.BoolKind:     protowire.VarintType,
 	protoreflect.EnumKind:     protowire.VarintType,
 	protoreflect.Int32Kind:    protowire.VarintType,
@@ -51,6 +51,8 @@ var wireTypes = map[protoreflect.Kind]protowire.Type{
 var errUnknown = errors.New("BUG: internal error (unknown)")
 
 var errDecode = errors.New("cannot parse invalid wire-format data")
+
+var errInvalidUTF8 = errors.New("field contains invalid UTF-8")
 
 // AppendTag encodes num and typ as a varint-encoded tag and appends it to b.
 func AppendTag(b []byte, num protowire.Number, typ protowire.Type) int {
@@ -173,4 +175,9 @@ func AppendString(b []byte, v string) (n int) {
 	n += AppendVarint(b, uint64(len(v)))
 	n += copy(b[n:], v)
 	return n
+}
+
+// EnforceUTF8 only support proto3 now
+func EnforceUTF8() bool {
+	return true
 }

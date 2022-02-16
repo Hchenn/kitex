@@ -5,7 +5,6 @@ type BProtocol interface {
 	WriteMessage(buf []byte, number int32, fastWrite FastWrite) (n int)
 	WriteListPacked(buf []byte, number int32, length int, single BMarshal) (n int)
 	WriteMapEntry(buf []byte, number int32, entry BMarshal) (n int)
-
 	WriteBool(buf []byte, number int32, value bool) (n int)
 	WriteInt32(buf []byte, number int32, value int32) (n int)
 	WriteInt64(buf []byte, number int32, value int64) (n int)
@@ -21,13 +20,9 @@ type BProtocol interface {
 	WriteSfixed64(buf []byte, number int32, value int64) (n int)
 	WriteString(buf []byte, number int32, value string) (n int)
 	WriteBytes(buf []byte, number int32, value []byte) (n int)
-
-	// string/bytes/message not use it
 	ReadMessage(buf []byte, _type int8, fastRead FastRead) (offset int, err error)
 	ReadList(buf []byte, _type int8, single BUnmarshal) (n int, err error)
 	ReadMapEntry(buf []byte, _type int8, umk, umv BUnmarshal) (int, error)
-	Skip(buf []byte, _type int8, number int32) (n int, err error)
-
 	ReadBool(buf []byte, _type int8) (value bool, n int, err error)
 	ReadInt32(buf []byte, _type int8) (value int32, n int, err error)
 	ReadInt64(buf []byte, _type int8) (value int64, n int, err error)
@@ -43,7 +38,6 @@ type BProtocol interface {
 	ReadSfixed64(buf []byte, _type int8) (value int64, n int, err error)
 	ReadString(buf []byte, _type int8) (value string, n int, err error)
 	ReadBytes(buf []byte, _type int8) (value []byte, n int, err error)
-
 	SizeBool(number int32, value bool) (n int)
 	SizeInt32(number int32, value int32) (n int)
 	SizeInt64(number int32, value int64) (n int)
@@ -59,10 +53,10 @@ type BProtocol interface {
 	SizeSfixed64(number int32, value int64) (n int)
 	SizeString(number int32, value string) (n int)
 	SizeBytes(number int32, value []byte) (n int)
-
 	SizeMessage(number int32, size FastSize) (n int)
 	SizeMapEntry(number int32, entry BSize) (n int)
 	SizeListPacked(number int32, length int, single BSize) (n int)
+	Skip(buf []byte, _type int8, number int32) (n int, err error)
 }
 
 type BMarshal func(buf []byte, numTagOrKey, numIdxOrVal int32) int

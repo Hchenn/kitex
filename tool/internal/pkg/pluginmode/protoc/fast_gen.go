@@ -15,13 +15,13 @@ type FastAPIGenerator interface {
 	GenFastConst(g *protogen.GeneratedFile)
 }
 
-func newFastGen(f *protogen.File, g *protogen.GeneratedFile) *fastgen {
-	return &fastgen{f: f, g: g}
+func newFastGen(gen *protogen.Plugin, f *protogen.File) *fastgen {
+	return &fastgen{gen: gen, f: f}
 }
 
 type fastgen struct {
-	f *protogen.File
-	g *protogen.GeneratedFile
+	gen *protogen.Plugin
+	f   *protogen.File
 }
 
 func (fg *fastgen) NewMessage(m *protogen.Message) FastAPIGenerator {
@@ -31,56 +31,58 @@ func (fg *fastgen) NewMessage(m *protogen.Message) FastAPIGenerator {
 func (fg *fastgen) NewField(f *protogen.Field) FastAPIGenerator {
 	field := &fgField{}
 	field.number = fmt.Sprintf("%d", f.Desc.Number())
-	field.body = fg.newFieldBody(f)
+	field.body = fg.newFieldBody(f.Desc, f.Desc.IsList())
 	field.f = f
 	return field
 }
 
-func (fg *fastgen) newFieldBody(f *protogen.Field) fastAPIBodyGenerator {
-	// base gen
-	var fn = func(kind protoreflect.Kind, goident func() protogen.GoIdent) fastAPIBodyGenerator {
-		if kind == protoreflect.MessageKind {
-			// *struct
-			b := &bodyMessage{}
-			b.TypeName = "*" + fg.g.QualifiedGoIdent(goident())
-			return b
-		}
-		b := &bodyBase{}
-		b.TypeName = kindGoType[kind]
-		b.APIType = kindAPIType[kind]
-		return b
-	}
-
-	desc := f.Desc
-	kind := desc.Kind()
+func (fg *fastgen) newFieldBody(desc protoreflect.FieldDescriptor, isList bool) fastAPIBodyGenerator {
 	// map
 	if desc.IsMap() {
 		// map
 		b := &bodyMap{}
 		k, v := desc.MapKey(), desc.MapValue()
-		b.Key = fn(k.Kind(), func() protogen.GoIdent {
-			return newGoIdent(fg.f, k.Message())
-		})
-		b.Value = fn(v.Kind(), func() protogen.GoIdent {
-			return newGoIdent(fg.f, v.Message())
-		})
+		b.Key, b.Value = fg.newFieldBody(k, false), fg.newFieldBody(v, false)
 		b.TypeName = fmt.Sprintf("map[%s]%s", b.Key.typeName(), b.Value.typeName())
 		return b
 	}
 	// []
-	if desc.IsList() {
+	if isList {
 		b := &bodyList{}
 		b.IsPacked = desc.IsPacked()
-		b.Element = fn(kind, func() protogen.GoIdent {
-			return f.Message.GoIdent
-		})
+		b.Element = fg.newFieldBody(desc, false)
 		b.TypeName = "[]" + b.Element.typeName()
 		return b
 	}
-	// base
-	return fn(kind, func() protogen.GoIdent {
-		return f.Message.GoIdent
-	})
+	// Enum
+	kind := desc.Kind()
+	switch kind {
+	case protoreflect.MessageKind:
+		// *struct
+		b := &bodyMessage{}
+		// FIXME: Any is unsupported.
+		if desc.Message().ParentFile().Package() != fg.f.Desc.Package() {
+			b.TypeName = "*" + string(desc.Message().FullName())
+		} else {
+			b.TypeName = "*" + string(desc.Message().Name())
+		}
+		return b
+	case protoreflect.EnumKind:
+		// Enum
+		b := &bodyEnum{}
+		// FIXME: Any is unsupported.
+		if desc.Enum().ParentFile().Package() != fg.f.Desc.Package() {
+			b.TypeName = string(desc.Enum().FullName())
+		} else {
+			b.TypeName = string(desc.Enum().Name())
+		}
+		return b
+	default:
+		b := &bodyBase{}
+		b.TypeName = kindGoType[kind]
+		b.APIType = kindAPIType[kind]
+		return b
+	}
 }
 
 var _ FastAPIGenerator = &fgMessage{}
@@ -110,7 +112,7 @@ func (f *fgMessage) GenFastRead(g *protogen.GeneratedFile) {
 	// return
 	g.P(`return offset, nil`)
 	g.P(`SkipFieldError:`)
-	g.P(`return offset, errors.New("cannot parse invalid wire-format data")`)
+	g.P(`return offset, fmt.Errorf("%T cannot parse invalid wire-format data, error: %s", x, err)`)
 	g.P(`ReadFieldError:`)
 	g.P(`return offset, fmt.Errorf("%T read field %d '%s' error: %s", x, number, fieldIDToName_` + f.name() + `[number], err)`)
 	g.P(`}`)
@@ -118,9 +120,8 @@ func (f *fgMessage) GenFastRead(g *protogen.GeneratedFile) {
 }
 
 func (f *fgMessage) GenFastWrite(g *protogen.GeneratedFile) {
-	g.P(fmt.Sprintf("func (x *%s) FastWrite(buf []byte) int {", f.name()))
+	g.P(fmt.Sprintf("func (x *%s) FastWrite(buf []byte) (offset int) {", f.name()))
 	// switch case
-	g.P("offset := 0")
 	g.P("if x == nil { return offset }")
 	for i := range f.m.Fields {
 		number := f.m.Fields[i].Desc.Number()
@@ -132,15 +133,14 @@ func (f *fgMessage) GenFastWrite(g *protogen.GeneratedFile) {
 }
 
 func (f *fgMessage) GenFastSize(g *protogen.GeneratedFile) {
-	g.P(fmt.Sprintf("func (x *%s) Size() int {", f.name()))
+	g.P(fmt.Sprintf("func (x *%s) Size() (n int) {", f.name()))
 	// switch case
-	g.P("l := 0")
-	g.P("if x == nil { return l }")
+	g.P("if x == nil { return n }")
 	for i := range f.m.Fields {
 		number := f.m.Fields[i].Desc.Number()
-		g.P(fmt.Sprintf("l += x.sizeField%d()", number))
+		g.P(fmt.Sprintf("n += x.sizeField%d()", number))
 	}
-	g.P(`return l`)
+	g.P(`return n`)
 	g.P(`}`)
 	g.P()
 }
@@ -171,15 +171,14 @@ func (f *fgField) name() string {
 }
 
 func (f *fgField) GenFastRead(g *protogen.GeneratedFile) {
-	g.P(fmt.Sprintf("func (x *%s) fastReadField%s(buf []byte, _type int8) (int, error) {", f.parentName(), f.number))
+	g.P(fmt.Sprintf("func (x *%s) fastReadField%s(buf []byte, _type int8) (offset int, err error) {", f.parentName(), f.number))
 	f.body.bodyFastRead(g, fmt.Sprintf("x.%s", f.name()), f.f.Desc.IsList())
 	g.P("}")
 	g.P()
 }
 
 func (f *fgField) GenFastWrite(g *protogen.GeneratedFile) {
-	g.P(fmt.Sprintf("func (x *%s) fastWriteField%s(buf []byte) int {", f.parentName(), f.number))
-	g.P("offset := 0")
+	g.P(fmt.Sprintf("func (x *%s) fastWriteField%s(buf []byte) (offset int) {", f.parentName(), f.number))
 
 	setter := fmt.Sprintf("x.%s", f.name())
 	switch {
@@ -201,8 +200,7 @@ func (f *fgField) GenFastWrite(g *protogen.GeneratedFile) {
 }
 
 func (f *fgField) GenFastSize(g *protogen.GeneratedFile) {
-	g.P(fmt.Sprintf("func (x *%s) sizeField%s() int {", f.parentName(), f.number))
-	g.P("n := 0")
+	g.P(fmt.Sprintf("func (x *%s) sizeField%s() (n int) {", f.parentName(), f.number))
 
 	setter := fmt.Sprintf("x.%s", f.name())
 	switch {
@@ -245,16 +243,17 @@ func (f *bodyBase) typeName() string {
 }
 
 func (f *bodyBase) bodyFastRead(g *protogen.GeneratedFile, setter string, appendSetter bool) {
-	g.P("offset := 0")
-	g.P(fmt.Sprintf("v, l, err := bprotoc.Binary.Read%s(buf[offset:], _type)", f.APIType))
-	g.P(`if err != nil { return offset, err }`)
-	g.P(`offset += l`)
-	if appendSetter {
-		g.P(fmt.Sprintf("%s = append(%s, v)", setter, setter))
-	} else {
-		g.P(setter, " = v")
+	if !appendSetter {
+		g.P(fmt.Sprintf("%s, offset, err = bprotoc.Binary.Read%s(buf[offset:], _type)", setter, f.APIType))
+		g.P(`return offset, err`)
+		return
 	}
-	g.P("return offset, nil")
+	// appendSetter
+	g.P(fmt.Sprintf("var v %s", f.TypeName))
+	g.P(fmt.Sprintf("v, offset, err = bprotoc.Binary.Read%s(buf[offset:], _type)", f.APIType))
+	g.P(`if err != nil { return offset, err }`)
+	g.P(fmt.Sprintf("%s = append(%s, v)", setter, setter))
+	g.P(`return offset, err`)
 }
 
 func (f *bodyBase) bodyFastWrite(g *protogen.GeneratedFile, setter string, number string) {
@@ -263,6 +262,35 @@ func (f *bodyBase) bodyFastWrite(g *protogen.GeneratedFile, setter string, numbe
 
 func (f *bodyBase) bodyFastSize(g *protogen.GeneratedFile, setter string, number string) {
 	g.P(fmt.Sprintf("n += bprotoc.Binary.Size%s(%s, %s)", f.APIType, number, setter))
+}
+
+// enum
+type bodyEnum struct {
+	TypeName string
+}
+
+func (f *bodyEnum) typeName() string {
+	return f.TypeName
+}
+
+func (f *bodyEnum) bodyFastRead(g *protogen.GeneratedFile, setter string, appendSetter bool) {
+	g.P("var v int32")
+	g.P("v, offset, err = bprotoc.Binary.ReadInt32(buf[offset:], _type)")
+	g.P(`if err != nil { return offset, err }`)
+	if appendSetter {
+		g.P(fmt.Sprintf("%s = append(%s, %s(v))", setter, setter, f.TypeName))
+	} else {
+		g.P(fmt.Sprintf("%s = %s(v)", setter, f.TypeName))
+	}
+	g.P("return offset, nil")
+}
+
+func (f *bodyEnum) bodyFastWrite(g *protogen.GeneratedFile, setter string, number string) {
+	g.P(fmt.Sprintf("offset += bprotoc.Binary.WriteInt32(buf[offset:], %s, int32(%s))", number, setter))
+}
+
+func (f *bodyEnum) bodyFastSize(g *protogen.GeneratedFile, setter string, number string) {
+	g.P(fmt.Sprintf("n += bprotoc.Binary.SizeInt32(%s, int32(%s))", number, setter))
 }
 
 // *struct
@@ -275,11 +303,9 @@ func (f *bodyMessage) typeName() string {
 }
 
 func (f *bodyMessage) bodyFastRead(g *protogen.GeneratedFile, setter string, appendSetter bool) {
-	g.P("offset := 0")
 	g.P("var v ", f.TypeName[1:]) // type name is *struct, trim * here
-	g.P("l, err := bprotoc.Binary.ReadMessage(buf[offset:], _type, &v)")
+	g.P("offset, err = bprotoc.Binary.ReadMessage(buf[offset:], _type, &v)")
 	g.P(`if err != nil { return offset, err }`)
-	g.P(`offset += l`)
 	if appendSetter {
 		g.P(fmt.Sprintf("%s = append(%s, &v)", setter, setter))
 	} else {
@@ -296,7 +322,7 @@ func (f *bodyMessage) bodyFastSize(g *protogen.GeneratedFile, setter string, num
 	g.P(fmt.Sprintf("n += bprotoc.Binary.SizeMessage(%s, %s)", number, setter))
 }
 
-// TODO: string, bytes, *struct, no packed map
+// string, bytes, *struct, no packed map
 type bodyList struct {
 	TypeName string // []xxx
 	IsPacked bool
@@ -308,15 +334,12 @@ func (f *bodyList) typeName() string {
 }
 
 func (f *bodyList) bodyFastRead(g *protogen.GeneratedFile, setter string, appendSetter bool) {
+	// packed
 	if f.IsPacked {
-		g.P("offset := 0")
-		// packed
-		g.P(``)
-		g.P(`l, err := bprotoc.Binary.ReadList(buf[offset:], _type,`)
+		g.P(`offset, err = bprotoc.Binary.ReadList(buf[offset:], _type,`)
 		g.P(`func(buf []byte, _type int8) (n int, err error) {`)
 		f.Element.bodyFastRead(g, setter, appendSetter)
 		g.P(`})`)
-		g.P(`offset += l`)
 		g.P(`return offset, err`)
 		return
 	}
@@ -362,14 +385,13 @@ func (f *bodyMap) typeName() string {
 }
 
 func (f *bodyMap) bodyFastRead(g *protogen.GeneratedFile, setter string, appendSetter bool) {
-	g.P("offset := 0")
 	// check nil
 	g.P(fmt.Sprintf(`if %s == nil { %s = make(%s) }`, setter, setter, f.typeName()))
 	// set default
 	g.P(fmt.Sprintf("var key %s", f.Key.typeName()))
 	g.P(fmt.Sprintf("var value %s", f.Value.typeName()))
 	// unmarshal
-	g.P("l, err := bprotoc.Binary.ReadMapEntry(buf[offset:], _type,")
+	g.P("offset, err = bprotoc.Binary.ReadMapEntry(buf[offset:], _type,")
 	g.P(`func(buf []byte, _type int8) (int, error) {`)
 
 	f.Key.bodyFastRead(g, "key", false)
@@ -379,7 +401,6 @@ func (f *bodyMap) bodyFastRead(g *protogen.GeneratedFile, setter string, appendS
 	g.P(`})`)
 
 	g.P(`if err != nil { return offset, err }`)
-	g.P(`offset += l`)
 	g.P(setter, "[key] = value")
 	g.P("return offset, nil")
 }
@@ -409,8 +430,6 @@ func (f *bodyMap) bodyFastSize(g *protogen.GeneratedFile, setter string, number 
 }
 
 var kindAPIType = []string{
-	protoreflect.EnumKind:     "Enum",  // TODO: ?
-	protoreflect.GroupKind:    "Group", // TODO: ?
 	protoreflect.BoolKind:     "Bool",
 	protoreflect.Int32Kind:    "Int32",
 	protoreflect.Sint32Kind:   "Sint32",
@@ -426,13 +445,9 @@ var kindAPIType = []string{
 	protoreflect.DoubleKind:   "Double",
 	protoreflect.StringKind:   "String",
 	protoreflect.BytesKind:    "Bytes",
-	protoreflect.MessageKind:  "Message",
 }
 
 var kindGoType = []string{
-	protoreflect.EnumKind:     "int32", // TODO: ?
-	protoreflect.GroupKind:    "",      // TODO: ?
-	protoreflect.MessageKind:  "",      // DEL
 	protoreflect.BoolKind:     "bool",
 	protoreflect.Int32Kind:    "int32",
 	protoreflect.Sint32Kind:   "int32",
@@ -449,7 +464,3 @@ var kindGoType = []string{
 	protoreflect.StringKind:   "string",
 	protoreflect.BytesKind:    "[]byte",
 }
-
-//go:noescape
-//go:linkname newGoIdent google.golang.org/protobuf/compiler/protogen.newGoIdent
-func newGoIdent(f *protogen.File, d protoreflect.Descriptor) protogen.GoIdent
