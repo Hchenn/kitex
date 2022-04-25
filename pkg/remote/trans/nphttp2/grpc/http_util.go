@@ -21,11 +21,10 @@
 package grpc
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"io"
+	"github.com/cloudwego/netpoll"
 	"math"
 	"net"
 	"net/http"
@@ -609,13 +608,13 @@ type framer struct {
 	writer *bufWriter
 }
 
-func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize uint32) *framer {
+func newFramer(conn netpoll.Connection, writeBufferSize, readBufferSize, maxHeaderListSize uint32) *framer {
 	w := newBufWriter(conn, int(writeBufferSize))
 
-	var r io.Reader = conn
-	if readBufferSize > 0 {
-		r = bufio.NewReaderSize(r, int(readBufferSize))
-	}
+	var r = conn.Reader()
+	//if readBufferSize > 0 {
+	//	r = bufio.NewReaderSize(r, int(readBufferSize))
+	//}
 
 	fr := &framer{
 		writer: w,
