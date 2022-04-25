@@ -18,6 +18,8 @@ package nphttp2
 
 import (
 	"context"
+	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
+	"github.com/cloudwego/netpoll"
 	"net"
 
 	"github.com/cloudwego/kitex/pkg/remote"
@@ -61,10 +63,12 @@ func (h *cliTransHandler) Write(ctx context.Context, conn net.Conn, msg remote.M
 }
 
 func (h *cliTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
-	buf := newBuffer(conn.(*clientConn))
-	defer buf.Release(err)
-
-	err = h.codec.Decode(ctx, msg, buf)
+	//buf := newBuffer(conn.(*clientConn))
+	//defer buf.Release(err)
+	//err = h.codec.Decode(ctx, msg, buf)
+	reader := np.NewReaderByteBuffer(conn.(netpoll.Reader))
+	err = h.codec.Decode(ctx, msg, reader)
+	reader.Release(err)
 	return
 }
 

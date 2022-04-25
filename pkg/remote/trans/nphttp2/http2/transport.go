@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/cloudwego/netpoll"
 	"io"
 	"io/ioutil"
 	"log"
@@ -636,7 +637,7 @@ func (t *Transport) newClientConn(c net.Conn, singleUse bool) (*ClientConn, erro
 	// MTU + crypto/tls record padding.
 	cc.bw = bufio.NewWriter(stickyErrWriter{c, &cc.werr})
 	cc.br = bufio.NewReader(c)
-	cc.fr = NewFramer(cc.bw, cc.br)
+	cc.fr = NewFramer(cc.bw, netpoll.NewReader(cc.br))
 	cc.fr.ReadMetaHeaders = hpack.NewDecoder(initialHeaderTableSize, nil)
 	cc.fr.MaxHeaderListSize = t.maxHeaderListSize()
 
@@ -2083,7 +2084,7 @@ func (rl *clientConnReadLoop) processData(f *DataFrame) error {
 		return nil
 	}
 	if f.Length > 0 {
-		if cs.req.Method == "HEAD" && len(data) > 0 {
+		if cs.req.Method == "HEAD" && data.Len() > 0 {
 			cc.logf("protocol error: received DATA on a HEAD request")
 			rl.endStreamError(cs, StreamError{
 				StreamID: f.StreamID,
@@ -2102,14 +2103,14 @@ func (rl *clientConnReadLoop) processData(f *DataFrame) error {
 		// Return any padded flow control now, since we won't
 		// refund it later on body reads.
 		var refund int
-		if pad := int(f.Length) - len(data); pad > 0 {
+		if pad := int(f.Length) - data.Len(); pad > 0 {
 			refund += pad
 		}
 		// Return len(data) now if the stream is already closed,
 		// since data will never be read.
 		didReset := cs.didReset
 		if didReset {
-			refund += len(data)
+			refund += data.Len()
 		}
 		if refund > 0 {
 			cc.inflow.add(int32(refund))
@@ -2124,8 +2125,8 @@ func (rl *clientConnReadLoop) processData(f *DataFrame) error {
 		}
 		cc.mu.Unlock()
 
-		if len(data) > 0 && !didReset {
-			if _, err := cs.bufPipe.Write(data); err != nil {
+		if data.Len() > 0 && !didReset {
+			if _, err := cs.bufPipe.Write(data.Bytes()); err != nil {
 				rl.endStreamError(cs, err)
 				return err
 			}

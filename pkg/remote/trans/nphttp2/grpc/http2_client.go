@@ -22,6 +22,7 @@ package grpc
 
 import (
 	"context"
+	"github.com/cloudwego/netpoll"
 	"io"
 	"math"
 	"net"
@@ -35,9 +36,10 @@ import (
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc/syscall"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
-	"golang.org/x/net/http2"
+
 	"golang.org/x/net/http2/hpack"
 )
 
@@ -46,7 +48,7 @@ type http2Client struct {
 	lastRead   int64 // Keep this field 64-bit aligned. Accessed atomically.
 	ctx        context.Context
 	cancel     context.CancelFunc
-	conn       net.Conn // underlying communication channel
+	conn       netpoll.Connection // underlying communication channel
 	loopy      *loopyWriter
 	remoteAddr net.Addr
 	localAddr  net.Addr
@@ -100,12 +102,13 @@ type http2Client struct {
 	onClose   func()
 
 	bufferPool *bufferPool
+	readerOnce sync.Once
 }
 
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
 // and starts to receive messages on it. Non-nil error returns if construction
 // fails.
-func newHTTP2Client(ctx context.Context, conn net.Conn, opts ConnectOptions,
+func newHTTP2Client(ctx context.Context, conn netpoll.Connection, opts ConnectOptions,
 	remoteService string, onGoAway func(GoAwayReason), onClose func()) (_ *http2Client, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
@@ -186,7 +189,8 @@ func newHTTP2Client(ctx context.Context, conn net.Conn, opts ConnectOptions,
 	// Start the reader goroutine for incoming message. Each transport has
 	// a dedicated goroutine which reads HTTP2 frame from network. Then it
 	// dispatches the frame to the corresponding stream entity.
-	gofunc.RecoverGoFuncWithInfo(ctx, t.reader, gofunc.NewBasicInfo(remoteService, conn.RemoteAddr().String()))
+	//gofunc.RecoverGoFuncWithInfo(ctx, t.reader, gofunc.NewBasicInfo(remoteService, conn.RemoteAddr().String()))
+	conn.SetOnRequest(t.reader)
 
 	// Send connection preface to server.
 	n, err := t.conn.Write(ClientPreface)
@@ -254,7 +258,7 @@ func (t *http2Client) newStream(ctx context.Context, callHdr *CallHdr) *Stream {
 			closeStream: func(err error) {
 				t.CloseStream(s, err)
 			},
-			freeBuffer: t.bufferPool.put,
+			//freeBuffer: t.bufferPool.put,
 		},
 		windowHandler: func(n int) {
 			t.updateWindow(s, uint32(n))
@@ -535,6 +539,7 @@ func (t *http2Client) Close() error {
 	for _, s := range streams {
 		t.closeStream(s, ErrConnClosing, false, http2.ErrCodeNo, status.New(codes.Unavailable, ErrConnClosing.Desc), nil, false)
 	}
+	close(t.readerDone)
 	return err
 }
 
@@ -679,18 +684,15 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 			return
 		}
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
-			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+			if w := s.fc.onRead(size - uint32(f.Data().Len())); w > 0 {
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
 		}
 		// TODO(bradfitz, zhaoq): A copy is required here because there is no
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
-		if len(f.Data()) > 0 {
-			buffer := t.bufferPool.get()
-			buffer.Reset()
-			buffer.Write(f.Data())
-			s.write(recvMsg{buffer: buffer})
+		if data := f.Data(); data.Len() > 0 {
+			s.write(recvMsg{buffer: data})
 		}
 	}
 	// The server has closed the stream without sending trailers.  Record that
@@ -937,27 +939,31 @@ func (t *http2Client) operateHeaders(frame *http2.MetaHeadersFrame) {
 // TODO(zhaoq): currently one reader per transport. Investigate whether this is
 // optimal.
 // TODO(zhaoq): Check the validity of the incoming frame sequence.
-func (t *http2Client) reader() {
-	defer close(t.readerDone)
-	// Check the validity of server preface.
-	frame, err := t.framer.ReadFrame()
-	if err != nil {
-		t.Close() // this kicks off resetTransport, so must be last before return
-		return
-	}
-	t.conn.SetReadDeadline(time.Time{}) // reset deadline once we get the settings frame (we didn't time out, yay!)
-	if t.keepaliveEnabled {
-		atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
-	}
-	sf, ok := frame.(*http2.SettingsFrame)
-	if !ok {
-		t.Close() // this kicks off resetTransport, so must be last before return
-		return
-	}
-	t.handleSettings(sf, true)
+//func (t *http2Client) reader() {
+func (t *http2Client) reader(ctx context.Context, conn netpoll.Connection) error {
+	t.readerOnce.Do(func() {
+		//defer close(t.readerDone)
+		// Check the validity of server preface.
+		frame, err := t.framer.ReadFrame()
+		if err != nil {
+			t.Close() // this kicks off resetTransport, so must be last before return
+			return
+		}
+		t.conn.SetReadDeadline(time.Time{}) // reset deadline once we get the settings frame (we didn't time out, yay!)
+		if t.keepaliveEnabled {
+			atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
+		}
+		sf, ok := frame.(*http2.SettingsFrame)
+		if !ok {
+			t.Close() // this kicks off resetTransport, so must be last before return
+			return
+		}
+		t.handleSettings(sf, true)
+	})
 
 	// loop to keep reading incoming messages on this transport.
-	for {
+	r := conn.Reader()
+	for total := r.Len(); total > 0; total = r.Len() {
 		t.controlBuf.throttle()
 		frame, err := t.framer.ReadFrame()
 		if t.keepaliveEnabled {
@@ -981,7 +987,7 @@ func (t *http2Client) reader() {
 			} else {
 				// Transport error.
 				t.Close()
-				return
+				return err
 			}
 		}
 		switch frame := frame.(type) {
@@ -1003,6 +1009,7 @@ func (t *http2Client) reader() {
 			klog.Warnf("transport: http2Client.reader got unhandled frame type %v.", frame)
 		}
 	}
+	return nil
 }
 
 func minTime(a, b time.Duration) time.Duration {

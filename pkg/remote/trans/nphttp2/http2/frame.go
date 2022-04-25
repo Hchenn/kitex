@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2/hpack"
+
+	"github.com/cloudwego/netpoll"
 )
 
 const frameHeaderLen = 9
@@ -125,7 +127,7 @@ var flagName = map[FrameType]map[Flags]string{
 type frameParser func(fc *frameCache, fh FrameHeader, payload []byte) (Frame, error)
 
 var frameParsers = map[FrameType]frameParser{
-	FrameData:         parseDataFrame,
+	//FrameData:         parseDataFrame,
 	FrameHeaders:      parseHeadersFrame,
 	FramePriority:     parsePriorityFrame,
 	FrameRSTStream:    parseRSTStreamFrame,
@@ -227,14 +229,12 @@ var fhBytes = sync.Pool{
 
 // ReadFrameHeader reads 9 bytes from r and returns a FrameHeader.
 // Most users should use Framer.ReadFrame instead.
-func ReadFrameHeader(r io.Reader) (FrameHeader, error) {
-	bufp := fhBytes.Get().(*[]byte)
-	defer fhBytes.Put(bufp)
-	return readFrameHeader(*bufp, r)
+func ReadFrameHeader(r netpoll.Reader) (FrameHeader, error) {
+	return readFrameHeader(r)
 }
 
-func readFrameHeader(buf []byte, r io.Reader) (FrameHeader, error) {
-	_, err := io.ReadFull(r, buf[:frameHeaderLen])
+func readFrameHeader(r netpoll.Reader) (FrameHeader, error) {
+	buf, err := r.Next(frameHeaderLen)
 	if err != nil {
 		return FrameHeader{}, err
 	}
@@ -263,7 +263,7 @@ type Frame interface {
 
 // A Framer reads and writes Frames.
 type Framer struct {
-	r         io.Reader
+	reader    netpoll.Reader
 	lastFrame Frame
 	errDetail error
 
@@ -320,7 +320,7 @@ type Framer struct {
 	logReads, logWrites bool
 
 	debugFramer       *Framer // only use for logging written writes
-	debugFramerBuf    *bytes.Buffer
+	debugFramerBuf    *netpoll.LinkBuffer
 	debugReadLoggerf  func(string, ...interface{})
 	debugWriteLoggerf func(string, ...interface{})
 
@@ -372,14 +372,17 @@ func (f *Framer) endWrite() error {
 
 func (f *Framer) logWrite() {
 	if f.debugFramer == nil {
-		f.debugFramerBuf = new(bytes.Buffer)
+		f.debugFramerBuf = netpoll.NewLinkBuffer(0)
 		f.debugFramer = NewFramer(nil, f.debugFramerBuf)
 		f.debugFramer.logReads = false // we log it ourselves, saying "wrote" below
 		// Let us read anything, even if we accidentally wrote it
 		// in the wrong order:
 		f.debugFramer.AllowIllegalReads = true
 	}
-	f.debugFramerBuf.Write(f.wbuf)
+	tmp, _ := f.debugFramerBuf.Malloc(len(f.wbuf))
+	copy(tmp, f.wbuf)
+	f.debugFramerBuf.Flush()
+
 	fr, err := f.debugFramer.ReadFrame()
 	if err != nil {
 		f.debugWriteLoggerf("http2: Framer %p: failed to decode just-written frame", f)
@@ -422,10 +425,10 @@ func (fc *frameCache) getDataFrame() *DataFrame {
 }
 
 // NewFramer returns a Framer that writes frames to w and reads them from r.
-func NewFramer(w io.Writer, r io.Reader) *Framer {
+func NewFramer(w io.Writer, r netpoll.Reader) *Framer {
 	fr := &Framer{
 		w:                 w,
-		r:                 r,
+		reader:            r,
 		logReads:          logFrameReads,
 		logWrites:         logFrameWrites,
 		debugReadLoggerf:  log.Printf,
@@ -489,18 +492,39 @@ func (fr *Framer) ReadFrame() (Frame, error) {
 	if fr.lastFrame != nil {
 		fr.lastFrame.invalidate()
 	}
-	fh, err := readFrameHeader(fr.headerBuf[:], fr.r)
+	fh, err := readFrameHeader(fr.reader)
 	if err != nil {
 		return nil, err
 	}
 	if fh.Length > fr.maxReadSize {
 		return nil, ErrFrameTooLarge
 	}
-	payload := fr.getReadBuf(fh.Length)
-	if _, err := io.ReadFull(fr.r, payload); err != nil {
-		return nil, err
+
+	var f Frame
+	switch fh.Type {
+	case FrameData:
+		f, err = parseDataFrame(fr.frameCache, fh, fr.reader)
+	case FramePriority, FrameRSTStream, FramePing, FrameWindowUpdate:
+		var payload []byte
+		payload, err = fr.reader.Next(int(fh.Length))
+		if err != nil {
+			return nil, err
+		}
+		f, err = typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
+	case FrameHeaders, FrameSettings, FramePushPromise, FrameGoAway, FrameContinuation:
+		fallthrough
+	default:
+		var payload, next []byte
+		next, err = fr.reader.Next(int(fh.Length))
+		if err != nil {
+			return nil, err
+		}
+		payload = fr.getReadBuf(fh.Length)
+		copy(payload, next)
+		f, err = typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
 	}
-	f, err := typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
+	fr.reader.Release()
+	//f, err := typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
 	if err != nil {
 		if ce, ok := err.(connError); ok {
 			return nil, fr.connError(ce.Code, ce.Reason)
@@ -572,7 +596,7 @@ func (fr *Framer) checkFrameOrder(f Frame) error {
 // See http://http2.github.io/http2-spec/#rfc.section.6.1
 type DataFrame struct {
 	FrameHeader
-	data []byte
+	data *netpoll.LinkBuffer
 }
 
 func (f *DataFrame) StreamEnded() bool {
@@ -583,12 +607,12 @@ func (f *DataFrame) StreamEnded() bool {
 // size byte or padding suffix bytes.
 // The caller must not retain the returned memory past the next
 // call to ReadFrame.
-func (f *DataFrame) Data() []byte {
+func (f *DataFrame) Data() *netpoll.LinkBuffer {
 	f.checkValid()
 	return f.data
 }
 
-func parseDataFrame(fc *frameCache, fh FrameHeader, payload []byte) (Frame, error) {
+func parseDataFrame(fc *frameCache, fh FrameHeader, payload netpoll.Reader) (Frame, error) {
 	if fh.StreamID == 0 {
 		// DATA frames MUST be associated with a stream. If a
 		// DATA frame is received whose stream identifier
@@ -601,21 +625,31 @@ func parseDataFrame(fc *frameCache, fh FrameHeader, payload []byte) (Frame, erro
 	f.FrameHeader = fh
 
 	var padSize byte
+	var payloadLen = int(fh.Length)
 	if fh.Flags.Has(FlagDataPadded) {
 		var err error
-		payload, padSize, err = readByte(payload)
+		padSize, err = payload.ReadByte()
+		payloadLen--
 		if err != nil {
 			return nil, err
 		}
 	}
-	if int(padSize) > len(payload) {
+	if int(padSize) > payloadLen {
 		// If the length of the padding is greater than the
 		// length of the frame payload, the recipient MUST
 		// treat this as a connection error.
 		// Filed: https://github.com/http2/http2-spec/issues/610
 		return nil, connError{ErrCodeProtocol, "pad size larger than data payload"}
 	}
-	f.data = payload[:len(payload)-int(padSize)]
+	r, err := payload.Slice(payloadLen - int(padSize))
+	if err == nil {
+		err = payload.Skip(int(padSize))
+	}
+	if err != nil {
+		r.(io.Closer).Close()
+		return nil, err
+	}
+	f.data = r.(*netpoll.LinkBuffer)
 	return f, nil
 }
 
@@ -1588,14 +1622,14 @@ func summarizeFrame(f Frame) string {
 			buf.Truncate(buf.Len() - 1) // remove trailing comma
 		}
 	case *DataFrame:
-		data := f.Data()
+		data := f.Data().Bytes()
 		const max = 256
 		if len(data) > max {
 			data = data[:max]
 		}
 		fmt.Fprintf(&buf, " data=%q", data)
-		if len(f.Data()) > max {
-			fmt.Fprintf(&buf, " (%d bytes omitted)", len(f.Data())-max)
+		if f.Data().Len() > max {
+			fmt.Fprintf(&buf, " (%d bytes omitted)", f.Data().Len()-max)
 		}
 	case *WindowUpdateFrame:
 		if f.StreamID == 0 {

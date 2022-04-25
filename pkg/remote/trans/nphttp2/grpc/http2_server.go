@@ -34,14 +34,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudwego/kitex/pkg/gofunc"
-	"github.com/cloudwego/kitex/pkg/klog"
-	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
-	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 	"github.com/cloudwego/netpoll"
-	http2 "golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/cloudwego/kitex/pkg/gofunc"
+	"github.com/cloudwego/kitex/pkg/klog"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 )
 
 var (
@@ -62,7 +63,7 @@ type http2Server struct {
 	lastRead    int64
 	ctx         context.Context
 	done        chan struct{}
-	conn        net.Conn
+	conn        netpoll.Connection
 	loopy       *loopyWriter
 	readerDone  chan struct{} // sync point to enable testing.
 	writerDone  chan struct{} // sync point to enable testing.
@@ -109,11 +110,12 @@ type http2Server struct {
 	idle time.Time
 
 	bufferPool *bufferPool
+	handler    func(s *Stream, tr ServerTransport, conn net.Conn)
 }
 
 // newHTTP2Server constructs a ServerTransport based on HTTP2. ConnectionError is
 // returned if something goes wrong.
-func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig) (_ ServerTransport, err error) {
+func newHTTP2Server(ctx context.Context, conn netpoll.Connection, config *ServerConfig, handler func(s *Stream, tr ServerTransport, conn net.Conn)) (_ ServerTransport, err error) {
 	maxHeaderListSize := defaultServerMaxHeaderListSize
 	if config.MaxHeaderListSize != nil {
 		maxHeaderListSize = *config.MaxHeaderListSize
@@ -230,8 +232,9 @@ func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig) (_
 	}()
 
 	// Check the validity of client preface.
-	preface := make([]byte, len(ClientPreface))
-	if _, err := io.ReadFull(t.conn, preface); err != nil {
+	//preface := make([]byte, len(ClientPreface))
+	preface, err := t.conn.Reader().Next(len(ClientPreface))
+	if err != nil {
 		// In deployments where a gRPC server runs behind a cloud load balancer
 		// which performs regular TCP level health checks, the connection is
 		// closed immediately by the latter.  Returning io.EOF here allows the
@@ -271,11 +274,12 @@ func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig) (_
 	}, gofunc.NewBasicInfo("", conn.RemoteAddr().String()))
 
 	gofunc.RecoverGoFuncWithInfo(ctx, t.keepalive, gofunc.NewBasicInfo("", conn.RemoteAddr().String()))
-	return t, nil
+	t.handler = handler
+	return t, conn.SetOnRequest(t.onrequest)
 }
 
 // operateHeader takes action on the decoded headers.
-func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(*Stream), traceCtx func(context.Context, string) context.Context) (fatal bool) {
+func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame) (fatal bool) {
 	streamID := frame.Header().StreamID
 	state := &decodeState{
 		serverSide: true,
@@ -349,15 +353,14 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 	s.requestRead = func(n int) {
 		t.adjustWindow(s, uint32(n))
 	}
-	s.ctx = traceCtx(s.ctx, s.method)
+	//s.ctx = traceCtx(s.ctx, s.method)
 	s.ctxDone = s.ctx.Done()
 	s.wq = newWriteQuota(defaultWriteQuota, s.ctxDone)
 	s.trReader = &transportReader{
 		reader: &recvBufferReader{
-			ctx:        s.ctx,
-			ctxDone:    s.ctxDone,
-			recv:       s.buf,
-			freeBuffer: t.bufferPool.put,
+			ctx:     s.ctx,
+			ctxDone: s.ctxDone,
+			recv:    s.buf,
 		},
 		windowHandler: func(n int) {
 			t.updateWindow(s, uint32(n))
@@ -368,16 +371,13 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 		streamID: s.id,
 		wq:       s.wq,
 	})
-	handle(s)
+	t.handler(s, t, t.conn)
 	return false
 }
 
-// HandleStreams receives incoming streams using the given handler. This is
-// typically run in a separate goroutine.
-// traceCtx attaches trace to ctx and returns the new context.
-func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
-	defer close(t.readerDone)
-	for {
+func (t *http2Server) onrequest(ctx context.Context, conn netpoll.Connection) error {
+	r := conn.Reader()
+	for total := r.Len(); total > 0; total = r.Len() {
 		t.controlBuf.throttle()
 		frame, err := t.framer.ReadFrame()
 		atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
@@ -401,15 +401,15 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
 			}
 			if err == io.EOF || err == io.ErrUnexpectedEOF || errors.Is(err, netpoll.ErrEOF) {
 				t.Close()
-				return
+				return err
 			}
 			klog.CtxWarnf(t.ctx, "transport: http2Server.HandleStreams failed to read frame: %v", err)
 			t.Close()
-			return
+			return err
 		}
 		switch frame := frame.(type) {
 		case *http2.MetaHeadersFrame:
-			if t.operateHeaders(frame, handle, traceCtx) {
+			if t.operateHeaders(frame) {
 				t.Close()
 				break
 			}
@@ -429,7 +429,68 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
 			klog.CtxErrorf(t.ctx, "transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
 		}
 	}
+	return nil
 }
+
+//
+//// HandleStreams receives incoming streams using the given handler. This is
+//// typically run in a separate goroutine.
+//// traceCtx attaches trace to ctx and returns the new context.
+//func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
+//	defer close(t.readerDone)
+//	for {
+//		t.controlBuf.throttle()
+//		frame, err := t.framer.ReadFrame()
+//		atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
+//		if err != nil {
+//			if se, ok := err.(http2.StreamError); ok {
+//				klog.CtxWarnf(t.ctx, "transport: http2Server.HandleStreams encountered http2.StreamError: %v", se)
+//				t.mu.Lock()
+//				s := t.activeStreams[se.StreamID]
+//				t.mu.Unlock()
+//				if s != nil {
+//					t.closeStream(s, true, se.Code, false)
+//				} else {
+//					t.controlBuf.put(&cleanupStream{
+//						streamID: se.StreamID,
+//						rst:      true,
+//						rstCode:  se.Code,
+//						onWrite:  func() {},
+//					})
+//				}
+//				continue
+//			}
+//			if err == io.EOF || err == io.ErrUnexpectedEOF || errors.Is(err, netpoll.ErrEOF) {
+//				t.Close()
+//				return
+//			}
+//			klog.CtxWarnf(t.ctx, "transport: http2Server.HandleStreams failed to read frame: %v", err)
+//			t.Close()
+//			return
+//		}
+//		switch frame := frame.(type) {
+//		case *http2.MetaHeadersFrame:
+//			if t.operateHeaders(frame, handle, traceCtx) {
+//				t.Close()
+//				break
+//			}
+//		case *http2.DataFrame:
+//			t.handleData(frame)
+//		case *http2.RSTStreamFrame:
+//			t.handleRSTStream(frame)
+//		case *http2.SettingsFrame:
+//			t.handleSettings(frame)
+//		case *http2.PingFrame:
+//			t.handlePing(frame)
+//		case *http2.WindowUpdateFrame:
+//			t.handleWindowUpdate(frame)
+//		case *http2.GoAwayFrame:
+//			// TODO: Handle GoAway from the client appropriately.
+//		default:
+//			klog.CtxErrorf(t.ctx, "transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
+//		}
+//	}
+//}
 
 func (t *http2Server) getStream(f http2.Frame) (*Stream, bool) {
 	t.mu.Lock()
@@ -533,18 +594,15 @@ func (t *http2Server) handleData(f *http2.DataFrame) {
 			return
 		}
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
-			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+			if w := s.fc.onRead(size - uint32(f.Data().Len())); w > 0 {
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
 		}
 		// TODO(bradfitz, zhaoq): A copy is required here because there is no
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
-		if len(f.Data()) > 0 {
-			buffer := t.bufferPool.get()
-			buffer.Reset()
-			buffer.Write(f.Data())
-			s.write(recvMsg{buffer: buffer})
+		if data := f.Data(); data.Len() > 0 {
+			s.write(recvMsg{buffer: data})
 		}
 	}
 	if f.Header().Flags.Has(http2.FlagDataEndStream) {
@@ -941,6 +999,7 @@ func (t *http2Server) Close() error {
 	t.mu.Unlock()
 	t.controlBuf.finish()
 	close(t.done)
+	close(t.readerDone)
 	err := t.conn.Close()
 	// Cancel all active streams.
 	for _, s := range streams {

@@ -30,8 +30,8 @@ import (
 )
 
 type clientConn struct {
+	*grpc.Stream
 	tr grpc.ClientTransport
-	s  *grpc.Stream
 }
 
 var _ grpcConn = (*clientConn)(nil)
@@ -62,21 +62,22 @@ func newClientConn(ctx context.Context, tr grpc.ClientTransport, addr string) (*
 	if err != nil {
 		return nil, err
 	}
-	return &clientConn{
-		tr: tr,
-		s:  s,
-	}, nil
+	cc := &clientConn{}
+	cc.tr = tr
+	cc.Stream = s
+	return cc, nil
 }
 
 // impl net.Conn
 func (c *clientConn) Read(b []byte) (n int, err error) {
-	n, err = c.s.Read(b)
-	if err == io.EOF {
-		if statusErr := c.s.Status().Err(); statusErr != nil {
-			err = statusErr
-		}
-	}
-	return n, convertErrorFromGrpcToKitex(err)
+	return 0, nil
+	//n, err = c.Stream.Read(b)
+	//if err == io.EOF {
+	//	if statusErr := c.s.Status().Err(); statusErr != nil {
+	//		err = statusErr
+	//	}
+	//}
+	//return n, convertErrorFromGrpcToKitex(err)
 }
 
 func (c *clientConn) Write(b []byte) (n int, err error) {
@@ -87,7 +88,7 @@ func (c *clientConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *clientConn) WriteFrame(hdr, data []byte) (n int, err error) {
-	err = c.tr.Write(c.s, hdr, data, &grpc.Options{})
+	err = c.tr.Write(c.Stream, hdr, data, &grpc.Options{})
 	return len(hdr) + len(data), convertErrorFromGrpcToKitex(err)
 }
 
@@ -97,7 +98,7 @@ func (c *clientConn) SetDeadline(t time.Time) error      { return nil }
 func (c *clientConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *clientConn) SetWriteDeadline(t time.Time) error { return nil }
 func (c *clientConn) Close() error {
-	c.tr.Write(c.s, nil, nil, &grpc.Options{Last: true})
+	c.tr.Write(c.Stream, nil, nil, &grpc.Options{Last: true})
 	// Always return nil; io.EOF is the only error that might make sense
 	// instead, but there is no need to signal the client to call Read
 	// as the only use left for the stream after Close is to call
@@ -105,5 +106,5 @@ func (c *clientConn) Close() error {
 	return nil
 }
 
-func (c *clientConn) Header() (metadata.MD, error) { return c.s.Header() }
-func (c *clientConn) Trailer() metadata.MD         { return c.s.Trailer() }
+func (c *clientConn) Header() (metadata.MD, error) { return c.Stream.Header() }
+func (c *clientConn) Trailer() metadata.MD         { return c.Stream.Trailer() }

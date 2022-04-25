@@ -32,6 +32,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/cloudwego/netpoll"
 	"io"
 	"log"
 	"math"
@@ -414,7 +415,7 @@ func (s *Server) ServeConn(c net.Conn, opts *ServeConnOpts) {
 	sc.inflow.add(initialWindowSize)
 	sc.hpackEncoder = hpack.NewEncoder(&sc.headerWriteBuf)
 
-	fr := NewFramer(sc.bw, c)
+	fr := NewFramer(sc.bw, netpoll.NewReader(c))
 	fr.ReadMetaHeaders = hpack.NewDecoder(initialHeaderTableSize, nil)
 	fr.MaxHeaderListSize = sc.maxHeaderListSize()
 	fr.SetMaxReadFrameSize(s.maxReadFrameSize())
@@ -1679,7 +1680,7 @@ func (sc *serverConn) processData(f *DataFrame) error {
 	}
 
 	// Sender sending more than they'd declared?
-	if st.declBodyBytes != -1 && st.bodyBytes+int64(len(data)) > st.declBodyBytes {
+	if st.declBodyBytes != -1 && st.bodyBytes+int64(data.Len()) > st.declBodyBytes {
 		st.body.CloseWithError(fmt.Errorf("sender tried to send more than declared Content-Length of %d bytes", st.declBodyBytes))
 		// RFC 7540, sec 8.1.2.6: A request or response is also malformed if the
 		// value of a content-length header field does not equal the sum of the
@@ -1693,20 +1694,20 @@ func (sc *serverConn) processData(f *DataFrame) error {
 		}
 		st.inflow.take(int32(f.Length))
 
-		if len(data) > 0 {
-			wrote, err := st.body.Write(data)
+		if data.Len() > 0 {
+			wrote, err := st.body.Write(data.Bytes())
 			if err != nil {
 				return streamError(id, ErrCodeStreamClosed)
 			}
-			if wrote != len(data) {
+			if wrote != data.Len() {
 				panic("internal error: bad Writer")
 			}
-			st.bodyBytes += int64(len(data))
+			st.bodyBytes += int64(data.Len())
 		}
 
 		// Return any padded flow control now, since we won't
 		// refund it later on body reads.
-		if pad := int32(f.Length) - int32(len(data)); pad > 0 {
+		if pad := int32(f.Length) - int32(data.Len()); pad > 0 {
 			sc.sendWindowUpdate32(nil, pad)
 			sc.sendWindowUpdate32(st, pad)
 		}
