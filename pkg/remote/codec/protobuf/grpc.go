@@ -57,6 +57,7 @@ func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remo
 		// TODO: reuse data buffer when we can free it safely
 		data = make([]byte, t.Size())
 		t.FastWrite(data)
+		fmt.Printf("Encode: (data=%x)\n", data[:9])
 	case marshaler:
 		// TODO: reuse data buffer when we can free it safely
 		data = make([]byte, t.Size())
