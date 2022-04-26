@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/cloudwego/netpoll"
 	"io"
 	"log"
 	"strings"
@@ -227,14 +228,12 @@ var fhBytes = sync.Pool{
 
 // ReadFrameHeader reads 9 bytes from r and returns a FrameHeader.
 // Most users should use Framer.ReadFrame instead.
-func ReadFrameHeader(r io.Reader) (FrameHeader, error) {
-	bufp := fhBytes.Get().(*[]byte)
-	defer fhBytes.Put(bufp)
-	return readFrameHeader(*bufp, r)
+func ReadFrameHeader(r netpoll.Reader) (FrameHeader, error) {
+	return readFrameHeader(r)
 }
 
-func readFrameHeader(buf []byte, r io.Reader) (FrameHeader, error) {
-	_, err := io.ReadFull(r, buf[:frameHeaderLen])
+func readFrameHeader(r netpoll.Reader) (FrameHeader, error) {
+	buf, err := r.Next(frameHeaderLen)
 	if err != nil {
 		return FrameHeader{}, err
 	}
@@ -263,7 +262,7 @@ type Frame interface {
 
 // A Framer reads and writes Frames.
 type Framer struct {
-	r         io.Reader
+	reader    netpoll.Reader
 	lastFrame Frame
 	errDetail error
 
@@ -272,7 +271,7 @@ type Framer struct {
 	lastHeaderStream uint32
 
 	maxReadSize uint32
-	headerBuf   [frameHeaderLen]byte
+	//headerBuf   [frameHeaderLen]byte
 
 	// TODO: let getReadBuf be configurable, and use a less memory-pinning
 	// allocator in server.go to minimize memory pinned for many idle conns.
@@ -373,7 +372,7 @@ func (f *Framer) endWrite() error {
 func (f *Framer) logWrite() {
 	if f.debugFramer == nil {
 		f.debugFramerBuf = new(bytes.Buffer)
-		f.debugFramer = NewFramer(nil, f.debugFramerBuf)
+		f.debugFramer = NewFramer(nil, netpoll.NewReader(f.debugFramerBuf))
 		f.debugFramer.logReads = false // we log it ourselves, saying "wrote" below
 		// Let us read anything, even if we accidentally wrote it
 		// in the wrong order:
@@ -422,10 +421,10 @@ func (fc *frameCache) getDataFrame() *DataFrame {
 }
 
 // NewFramer returns a Framer that writes frames to w and reads them from r.
-func NewFramer(w io.Writer, r io.Reader) *Framer {
+func NewFramer(w io.Writer, r netpoll.Reader) *Framer {
 	fr := &Framer{
 		w:                 w,
-		r:                 r,
+		reader:            r,
 		logReads:          logFrameReads,
 		logWrites:         logFrameWrites,
 		debugReadLoggerf:  log.Printf,
@@ -489,17 +488,19 @@ func (fr *Framer) ReadFrame() (Frame, error) {
 	if fr.lastFrame != nil {
 		fr.lastFrame.invalidate()
 	}
-	fh, err := readFrameHeader(fr.headerBuf[:], fr.r)
+	fh, err := readFrameHeader(fr.reader)
 	if err != nil {
 		return nil, err
 	}
 	if fh.Length > fr.maxReadSize {
 		return nil, ErrFrameTooLarge
 	}
-	payload := fr.getReadBuf(fh.Length)
-	if _, err := io.ReadFull(fr.r, payload); err != nil {
+	//payload := fr.getReadBuf(fh.Length)
+	payload, err := fr.reader.ReadBinary(int(fh.Length))
+	if err != nil {
 		return nil, err
 	}
+	fr.reader.Release()
 	f, err := typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
 	if err != nil {
 		if ce, ok := err.(connError); ok {

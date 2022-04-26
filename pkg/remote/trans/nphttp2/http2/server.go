@@ -32,6 +32,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/cloudwego/netpoll"
 	"io"
 	"log"
 	"math"
@@ -414,7 +415,7 @@ func (s *Server) ServeConn(c net.Conn, opts *ServeConnOpts) {
 	sc.inflow.add(initialWindowSize)
 	sc.hpackEncoder = hpack.NewEncoder(&sc.headerWriteBuf)
 
-	fr := NewFramer(sc.bw, c)
+	fr := NewFramer(sc.bw, netpoll.NewReader(c))
 	fr.ReadMetaHeaders = hpack.NewDecoder(initialHeaderTableSize, nil)
 	fr.MaxHeaderListSize = sc.maxHeaderListSize()
 	fr.SetMaxReadFrameSize(s.maxReadFrameSize())

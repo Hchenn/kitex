@@ -21,11 +21,9 @@
 package grpc
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -39,6 +37,7 @@ import (
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 
+	"github.com/cloudwego/netpoll"
 	"golang.org/x/net/http2/hpack"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
@@ -612,11 +611,11 @@ type framer struct {
 func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize uint32) *framer {
 	w := newBufWriter(conn, int(writeBufferSize))
 
-	var r io.Reader = conn
-	if readBufferSize > 0 {
-		r = bufio.NewReaderSize(r, int(readBufferSize))
-	}
-
+	//var r io.Reader = conn
+	//if readBufferSize > 0 {
+	//	r = bufio.NewReaderSize(r, int(readBufferSize))
+	//}
+	var r = conn.(netpoll.Connection).Reader()
 	fr := &framer{
 		writer: w,
 		Framer: http2.NewFramer(w, r),
