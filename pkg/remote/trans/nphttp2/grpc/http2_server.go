@@ -535,17 +535,20 @@ func (t *http2Server) handleData(f *http2.DataFrame) {
 			return
 		}
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
-			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+			if w := s.fc.onRead(size - uint32(f.Data().Len())); w > 0 {
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
 		}
 		// TODO(bradfitz, zhaoq): A copy is required here because there is no
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
-		if len(f.Data()) > 0 {
+		if f.Data().Len() > 0 {
+			data, _ := f.Data().Peek(f.Data().Len())
+			defer f.Data().Close()
+
 			buffer := t.bufferPool.get()
 			buffer.Reset()
-			buffer.Write(f.Data())
+			buffer.Write(data)
 			s.write(recvMsg{buffer: buffer})
 		}
 	}

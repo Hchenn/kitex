@@ -126,7 +126,7 @@ var flagName = map[FrameType]map[Flags]string{
 type frameParser func(fc *frameCache, fh FrameHeader, payload []byte) (Frame, error)
 
 var frameParsers = map[FrameType]frameParser{
-	FrameData:         parseDataFrame,
+	//FrameData:         parseDataFrame,
 	FrameHeaders:      parseHeadersFrame,
 	FramePriority:     parsePriorityFrame,
 	FrameRSTStream:    parseRSTStreamFrame,
@@ -496,11 +496,17 @@ func (fr *Framer) ReadFrame() (Frame, error) {
 		return nil, ErrFrameTooLarge
 	}
 	//payload := fr.getReadBuf(fh.Length)
-	payload, err := fr.reader.Next(int(fh.Length))
-	if err != nil {
-		return nil, err
+	var f Frame
+	if fh.Type == FrameData {
+		f, err = parseDataFrame(fr.frameCache, fh, fr.reader)
+	} else {
+		var payload []byte
+		payload, err = fr.reader.Next(int(fh.Length))
+		if err != nil {
+			return nil, err
+		}
+		f, err = typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
 	}
-	f, err := typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
 	if err != nil {
 		if ce, ok := err.(connError); ok {
 			return nil, fr.connError(ce.Code, ce.Reason)
@@ -572,7 +578,7 @@ func (fr *Framer) checkFrameOrder(f Frame) error {
 // See http://http2.github.io/http2-spec/#rfc.section.6.1
 type DataFrame struct {
 	FrameHeader
-	data []byte
+	data *netpoll.LinkBuffer
 }
 
 func (f *DataFrame) StreamEnded() bool {
@@ -583,12 +589,12 @@ func (f *DataFrame) StreamEnded() bool {
 // size byte or padding suffix bytes.
 // The caller must not retain the returned memory past the next
 // call to ReadFrame.
-func (f *DataFrame) Data() []byte {
+func (f *DataFrame) Data() *netpoll.LinkBuffer {
 	f.checkValid()
 	return f.data
 }
 
-func parseDataFrame(fc *frameCache, fh FrameHeader, payload []byte) (Frame, error) {
+func parseDataFrame(fc *frameCache, fh FrameHeader, payload netpoll.Reader) (Frame, error) {
 	if fh.StreamID == 0 {
 		// DATA frames MUST be associated with a stream. If a
 		// DATA frame is received whose stream identifier
@@ -601,21 +607,31 @@ func parseDataFrame(fc *frameCache, fh FrameHeader, payload []byte) (Frame, erro
 	f.FrameHeader = fh
 
 	var padSize byte
+	var payloadLen = int(fh.Length)
 	if fh.Flags.Has(FlagDataPadded) {
 		var err error
-		payload, padSize, err = readByte(payload)
+		padSize, err = payload.ReadByte()
+		payloadLen--
 		if err != nil {
 			return nil, err
 		}
 	}
-	if int(padSize) > len(payload) {
+	if int(padSize) > payloadLen {
 		// If the length of the padding is greater than the
 		// length of the frame payload, the recipient MUST
 		// treat this as a connection error.
 		// Filed: https://github.com/http2/http2-spec/issues/610
 		return nil, connError{ErrCodeProtocol, "pad size larger than data payload"}
 	}
-	f.data = payload[:len(payload)-int(padSize)]
+	r, err := payload.Slice(payloadLen - int(padSize))
+	if err == nil {
+		err = payload.Skip(int(padSize))
+	}
+	f.data = r.(*netpoll.LinkBuffer)
+	if err != nil {
+		f.data.Close()
+		return nil, err
+	}
 	return f, nil
 }
 
@@ -1588,14 +1604,14 @@ func summarizeFrame(f Frame) string {
 			buf.Truncate(buf.Len() - 1) // remove trailing comma
 		}
 	case *DataFrame:
-		data := f.Data()
+		data, _ := f.Data().Peek(f.Data().Len())
 		const max = 256
 		if len(data) > max {
 			data = data[:max]
 		}
 		fmt.Fprintf(&buf, " data=%q", data)
-		if len(f.Data()) > max {
-			fmt.Fprintf(&buf, " (%d bytes omitted)", len(f.Data())-max)
+		if f.Data().Len() > max {
+			fmt.Fprintf(&buf, " (%d bytes omitted)", f.Data().Len()-max)
 		}
 	case *WindowUpdateFrame:
 		if f.StreamID == 0 {
