@@ -1635,7 +1635,8 @@ func (sc *serverConn) processData(f *DataFrame) error {
 	if sc.inGoAway && sc.goAwayCode != ErrCodeNo {
 		return nil
 	}
-	data := f.Data()
+	data, _ := f.Data().Peek(f.Data().Len())
+	defer f.Data().Close()
 
 	// "If a DATA frame is received whose stream is not in "open"
 	// or "half closed (local)" state, the recipient MUST respond

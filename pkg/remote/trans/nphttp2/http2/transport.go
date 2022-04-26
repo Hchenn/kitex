@@ -2047,7 +2047,9 @@ func (b transportResponseBody) Close() error {
 func (rl *clientConnReadLoop) processData(f *DataFrame) error {
 	cc := rl.cc
 	cs := cc.streamByID(f.StreamID, f.StreamEnded())
-	data := f.Data()
+	data, _ := f.Data().Peek(f.Data().Len())
+	defer f.Data().Close()
+
 	if cs == nil {
 		cc.mu.Lock()
 		neverSent := cc.nextStreamID
