@@ -55,8 +55,11 @@ func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remo
 	switch t := message.Data().(type) {
 	case bprotoc.FastWrite:
 		// TODO: reuse data buffer when we can free it safely
-		data = make([]byte, t.Size())
-		t.FastWrite(data)
+		payloadLen := t.Size()
+		data = make([]byte, 5+payloadLen)
+		binary.BigEndian.PutUint32(header[1:5], uint32(payloadLen))
+		t.FastWrite(data[5:])
+		return writer.WriteData(data)
 	case marshaler:
 		// TODO: reuse data buffer when we can free it safely
 		data = make([]byte, t.Size())
