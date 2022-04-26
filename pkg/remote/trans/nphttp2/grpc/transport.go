@@ -28,7 +28,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -145,40 +144,6 @@ type recvBufferReader struct {
 	err         error
 }
 
-// Read reads the next len(p) bytes from last. If last is drained, it tries to
-// read additional data from recv. It blocks if there no additional data available
-// in recv. If Read returns any non-nil error, it will continue to return that error.
-func (r *recvBufferReader) Read(p []byte) (n int, err error) {
-	if r.err != nil {
-		return 0, r.err
-	}
-	for r.last == nil {
-		if r.closeStream != nil {
-			r.err = r.fillClient()
-		} else {
-			r.err = r.fill()
-		}
-		if r.err != nil {
-			return 0, r.err
-		}
-	}
-	// Read remaining data left in last call.
-	l := r.last.Len()
-	if l > len(p) {
-		l = len(p)
-	}
-	var tmp []byte
-	tmp, r.err = r.last.Next(l)
-	n = copy(p, tmp)
-	if r.last.Len() == 0 {
-		r.last.Close()
-		r.last = nil
-	} else {
-		r.last.Release()
-	}
-	return n, r.err
-}
-
 func (r *recvBufferReader) fill() (err error) {
 	select {
 	case <-r.ctxDone:
@@ -220,10 +185,8 @@ func (r *recvBufferReader) fillAdditional(m recvMsg) (err error) {
 	if m.err != nil || m.buffer == nil {
 		return m.err
 	}
-	if m.buffer.Len() == 0 {
-		return m.buffer.Close()
-	}
-	r.last = m.buffer
+	r.last.WriteBuffer(m.buffer)
+	r.last.Flush()
 	return nil
 }
 
@@ -249,7 +212,7 @@ type Stream struct {
 	recvCompress string
 	sendCompress string
 	buf          *recvBuffer
-	trReader     io.Reader
+	trReader     netpoll.Reader
 	fc           *inFlow
 	wq           *writeQuota
 
@@ -466,7 +429,13 @@ func (s *Stream) Read(p []byte) (n int, err error) {
 		return 0, er
 	}
 	s.requestRead(len(p))
-	return io.ReadFull(s.trReader, p)
+	src, err := s.trReader.Next(len(p))
+	if err != nil {
+		return 0, err
+	}
+	n = copy(p, src)
+	err = s.trReader.Release()
+	return n, err
 }
 
 // transportReader reads all the data available for this Stream from the transport and
@@ -474,21 +443,11 @@ func (s *Stream) Read(p []byte) (n int, err error) {
 // The error is io.EOF when the stream is done or another non-nil error if
 // the stream broke.
 type transportReader struct {
-	reader io.Reader
+	reader netpoll.Reader
 	// The handler to control the window update procedure for both this
 	// particular stream and the associated transport.
 	windowHandler func(int)
 	er            error
-}
-
-func (t *transportReader) Read(p []byte) (n int, err error) {
-	n, err = t.reader.Read(p)
-	if err != nil {
-		t.er = err
-		return
-	}
-	t.windowHandler(n)
-	return
 }
 
 // BytesReceived indicates whether any bytes have been received on this stream.
