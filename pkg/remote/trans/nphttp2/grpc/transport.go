@@ -33,6 +33,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/cloudwego/netpoll"
+
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
@@ -63,7 +65,7 @@ func (p *bufferPool) put(b *bytes.Buffer) {
 // recvMsg represents the received msg from the transport. All transport
 // protocol specific info has been removed.
 type recvMsg struct {
-	buffer *bytes.Buffer
+	buffer *netpoll.LinkBuffer
 	// nil: received some data
 	// io.EOF: stream is completed. data is nil.
 	// other non-nil error: transport failure. data is nil.
@@ -139,9 +141,8 @@ type recvBufferReader struct {
 	ctx         context.Context
 	ctxDone     <-chan struct{} // cache of ctx.Done() (for performance).
 	recv        *recvBuffer
-	last        *bytes.Buffer // Stores the remaining data in the previous calls.
+	last        *netpoll.LinkBuffer // Stores the remaining data in the previous calls.
 	err         error
-	freeBuffer  func(*bytes.Buffer)
 }
 
 // Read reads the next len(p) bytes from last. If last is drained, it tries to
@@ -151,33 +152,43 @@ func (r *recvBufferReader) Read(p []byte) (n int, err error) {
 	if r.err != nil {
 		return 0, r.err
 	}
-	if r.last != nil {
-		// Read remaining data left in last call.
-		copied, _ := r.last.Read(p)
-		if r.last.Len() == 0 {
-			r.freeBuffer(r.last)
-			r.last = nil
+	for r.last == nil {
+		if r.closeStream != nil {
+			r.err = r.fillClient()
+		} else {
+			r.err = r.fill()
 		}
-		return copied, nil
+		if r.err != nil {
+			return 0, r.err
+		}
 	}
-	if r.closeStream != nil {
-		n, r.err = r.readClient(p)
+	// Read remaining data left in last call.
+	l := r.last.Len()
+	if l > len(p) {
+		l = len(p)
+	}
+	var tmp []byte
+	tmp, r.err = r.last.Next(l)
+	n = copy(p, tmp)
+	if r.last.Len() == 0 {
+		r.last.Close()
+		r.last = nil
 	} else {
-		n, r.err = r.read(p)
+		r.last.Release()
 	}
 	return n, r.err
 }
 
-func (r *recvBufferReader) read(p []byte) (n int, err error) {
+func (r *recvBufferReader) fill() (err error) {
 	select {
 	case <-r.ctxDone:
-		return 0, ContextErr(r.ctx.Err())
+		return ContextErr(r.ctx.Err())
 	case m := <-r.recv.get():
-		return r.readAdditional(m, p)
+		return r.fillAdditional(m)
 	}
 }
 
-func (r *recvBufferReader) readClient(p []byte) (n int, err error) {
+func (r *recvBufferReader) fillClient() (err error) {
 	// If the context is canceled, then closes the stream with nil metadata.
 	// closeStream writes its error parameter to r.recv as a recvMsg.
 	// r.readAdditional acts on that message and returns the necessary error.
@@ -198,25 +209,22 @@ func (r *recvBufferReader) readClient(p []byte) (n int, err error) {
 		// faster.
 		r.closeStream(ContextErr(r.ctx.Err()))
 		m := <-r.recv.get()
-		return r.readAdditional(m, p)
+		return r.fillAdditional(m)
 	case m := <-r.recv.get():
-		return r.readAdditional(m, p)
+		return r.fillAdditional(m)
 	}
 }
 
-func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error) {
+func (r *recvBufferReader) fillAdditional(m recvMsg) (err error) {
 	r.recv.load()
-	if m.err != nil {
-		return 0, m.err
+	if m.err != nil || m.buffer == nil {
+		return m.err
 	}
-	copied, _ := m.buffer.Read(p)
 	if m.buffer.Len() == 0 {
-		r.freeBuffer(m.buffer)
-		r.last = nil
-	} else {
-		r.last = m.buffer
+		return m.buffer.Close()
 	}
-	return copied, nil
+	r.last = m.buffer
+	return nil
 }
 
 type streamState uint32
