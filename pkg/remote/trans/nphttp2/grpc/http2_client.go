@@ -39,6 +39,7 @@ import (
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 
+	"github.com/cloudwego/netpoll"
 	"golang.org/x/net/http2/hpack"
 )
 
@@ -1014,6 +1015,7 @@ func (t *http2Client) reader() {
 		default:
 			klog.Warnf("transport: http2Client.reader got unhandled frame type %v.", frame)
 		}
+		t.conn.(netpoll.Connection).Reader().Release()
 	}
 }
 
