@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudwego/netpoll"
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2/hpack"
 	"golang.org/x/net/idna"
@@ -636,7 +637,7 @@ func (t *Transport) newClientConn(c net.Conn, singleUse bool) (*ClientConn, erro
 	// MTU + crypto/tls record padding.
 	cc.bw = bufio.NewWriter(stickyErrWriter{c, &cc.werr})
 	cc.br = bufio.NewReader(c)
-	cc.fr = NewFramer(cc.bw, cc.br)
+	cc.fr = NewFramer(cc.bw, netpoll.NewReader(cc.br))
 	cc.fr.ReadMetaHeaders = hpack.NewDecoder(initialHeaderTableSize, nil)
 	cc.fr.MaxHeaderListSize = t.maxHeaderListSize()
 
