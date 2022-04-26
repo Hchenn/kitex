@@ -496,11 +496,10 @@ func (fr *Framer) ReadFrame() (Frame, error) {
 		return nil, ErrFrameTooLarge
 	}
 	//payload := fr.getReadBuf(fh.Length)
-	payload, err := fr.reader.ReadBinary(int(fh.Length))
+	payload, err := fr.reader.Next(int(fh.Length))
 	if err != nil {
 		return nil, err
 	}
-	fr.reader.Release()
 	f, err := typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
 	if err != nil {
 		if ce, ok := err.(connError); ok {
