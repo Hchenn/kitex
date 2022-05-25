@@ -28,10 +28,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"github.com/cloudwego/netpoll"
 
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
@@ -63,7 +64,7 @@ func (p *bufferPool) put(b *bytes.Buffer) {
 // recvMsg represents the received msg from the transport. All transport
 // protocol specific info has been removed.
 type recvMsg struct {
-	buffer *bytes.Buffer
+	buffer *netpoll.LinkBuffer
 	// nil: received some data
 	// io.EOF: stream is completed. data is nil.
 	// other non-nil error: transport failure. data is nil.
@@ -139,45 +140,20 @@ type recvBufferReader struct {
 	ctx         context.Context
 	ctxDone     <-chan struct{} // cache of ctx.Done() (for performance).
 	recv        *recvBuffer
-	last        *bytes.Buffer // Stores the remaining data in the previous calls.
+	last        *netpoll.LinkBuffer // Stores the remaining data in the previous calls.
 	err         error
-	freeBuffer  func(*bytes.Buffer)
 }
 
-// Read reads the next len(p) bytes from last. If last is drained, it tries to
-// read additional data from recv. It blocks if there no additional data available
-// in recv. If Read returns any non-nil error, it will continue to return that error.
-func (r *recvBufferReader) Read(p []byte) (n int, err error) {
-	if r.err != nil {
-		return 0, r.err
-	}
-	if r.last != nil {
-		// Read remaining data left in last call.
-		copied, _ := r.last.Read(p)
-		if r.last.Len() == 0 {
-			r.freeBuffer(r.last)
-			r.last = nil
-		}
-		return copied, nil
-	}
-	if r.closeStream != nil {
-		n, r.err = r.readClient(p)
-	} else {
-		n, r.err = r.read(p)
-	}
-	return n, r.err
-}
-
-func (r *recvBufferReader) read(p []byte) (n int, err error) {
+func (r *recvBufferReader) fill() (err error) {
 	select {
 	case <-r.ctxDone:
-		return 0, ContextErr(r.ctx.Err())
+		return ContextErr(r.ctx.Err())
 	case m := <-r.recv.get():
-		return r.readAdditional(m, p)
+		return r.fillAdditional(m)
 	}
 }
 
-func (r *recvBufferReader) readClient(p []byte) (n int, err error) {
+func (r *recvBufferReader) fillClient() (err error) {
 	// If the context is canceled, then closes the stream with nil metadata.
 	// closeStream writes its error parameter to r.recv as a recvMsg.
 	// r.readAdditional acts on that message and returns the necessary error.
@@ -198,25 +174,20 @@ func (r *recvBufferReader) readClient(p []byte) (n int, err error) {
 		// faster.
 		r.closeStream(ContextErr(r.ctx.Err()))
 		m := <-r.recv.get()
-		return r.readAdditional(m, p)
+		return r.fillAdditional(m)
 	case m := <-r.recv.get():
-		return r.readAdditional(m, p)
+		return r.fillAdditional(m)
 	}
 }
 
-func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error) {
+func (r *recvBufferReader) fillAdditional(m recvMsg) (err error) {
 	r.recv.load()
-	if m.err != nil {
-		return 0, m.err
+	if m.err != nil || m.buffer == nil {
+		return m.err
 	}
-	copied, _ := m.buffer.Read(p)
-	if m.buffer.Len() == 0 {
-		r.freeBuffer(m.buffer)
-		r.last = nil
-	} else {
-		r.last = m.buffer
-	}
-	return copied, nil
+	r.last.WriteBuffer(m.buffer)
+	r.last.Flush()
+	return nil
 }
 
 type streamState uint32
@@ -241,7 +212,7 @@ type Stream struct {
 	recvCompress string
 	sendCompress string
 	buf          *recvBuffer
-	trReader     io.Reader
+	trReader     netpoll.Reader
 	fc           *inFlow
 	wq           *writeQuota
 
@@ -458,7 +429,13 @@ func (s *Stream) Read(p []byte) (n int, err error) {
 		return 0, er
 	}
 	s.requestRead(len(p))
-	return io.ReadFull(s.trReader, p)
+	src, err := s.trReader.Next(len(p))
+	if err != nil {
+		return 0, err
+	}
+	n = copy(p, src)
+	err = s.trReader.Release()
+	return n, err
 }
 
 // StreamWrite only used for unit test
@@ -496,21 +473,11 @@ func CreateStream(id uint32, requestRead func(i int)) *Stream {
 // The error is io.EOF when the stream is done or another non-nil error if
 // the stream broke.
 type transportReader struct {
-	reader io.Reader
+	reader netpoll.Reader
 	// The handler to control the window update procedure for both this
 	// particular stream and the associated transport.
 	windowHandler func(int)
 	er            error
-}
-
-func (t *transportReader) Read(p []byte) (n int, err error) {
-	n, err = t.reader.Read(p)
-	if err != nil {
-		t.er = err
-		return
-	}
-	t.windowHandler(n)
-	return
 }
 
 // BytesReceived indicates whether any bytes have been received on this stream.

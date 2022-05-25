@@ -29,6 +29,7 @@ import (
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/codec/protobuf"
+	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	grpcTransport "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
@@ -78,10 +79,9 @@ func (t *svrTransHandler) Write(ctx context.Context, conn net.Conn, msg remote.M
 }
 
 func (t *svrTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
-	buf := newBuffer(conn.(*serverConn))
-	defer buf.Release(err)
-
-	err = t.codec.Decode(ctx, msg, buf)
+	reader := np.NewReaderByteBuffer(conn.(netpoll.Reader))
+	err = t.codec.Decode(ctx, msg, reader)
+	reader.Release(err)
 	return
 }
 
