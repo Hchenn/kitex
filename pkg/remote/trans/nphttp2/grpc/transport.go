@@ -470,7 +470,7 @@ func (s *Stream) Read(p []byte) (n int, err error) {
 }
 
 // StreamWrite only used for unit test
-func StreamWrite(s *Stream, buffer *bytes.Buffer) {
+func StreamWrite(s *Stream, buffer *netpoll.LinkBuffer) {
 	s.write(recvMsg{buffer: buffer})
 }
 
@@ -480,9 +480,6 @@ func CreateStream(id uint32, requestRead func(i int)) *Stream {
 	trReader := &transportReader{
 		reader: &recvBufferReader{
 			recv: recvBuffer,
-			freeBuffer: func(buffer *bytes.Buffer) {
-				buffer.Reset()
-			},
 		},
 		windowHandler: func(i int) {},
 	}
