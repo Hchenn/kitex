@@ -609,16 +609,12 @@ type framer struct {
 }
 
 func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize uint32) *framer {
-	w := newBufWriter(conn, int(writeBufferSize))
-
-	//var r io.Reader = conn
-	//if readBufferSize > 0 {
-	//	r = bufio.NewReaderSize(r, int(readBufferSize))
-	//}
-	var r = conn.(netpoll.Connection).Reader()
+	npConn := conn.(netpoll.Connection)
+	reader, writer := npConn.Reader(), npConn.Writer()
+	w := newBufWriter(writer, int(writeBufferSize))
 	fr := &framer{
 		writer: w,
-		Framer: http2.NewFramer(w, r),
+		Framer: http2.NewFramer(w, reader),
 	}
 	fr.SetMaxReadFrameSize(http2MaxFrameLen)
 	// Opt-in to Frame reuse API on framer to reduce garbage.
@@ -633,13 +629,13 @@ type bufWriter struct {
 	buf       []byte
 	offset    int
 	batchSize int
-	conn      net.Conn
+	conn      netpoll.Writer
 	err       error
 
 	onFlush func()
 }
 
-func newBufWriter(conn net.Conn, batchSize int) *bufWriter {
+func newBufWriter(conn netpoll.Writer, batchSize int) *bufWriter {
 	return &bufWriter{
 		buf:       make([]byte, batchSize*2),
 		batchSize: batchSize,
@@ -652,7 +648,8 @@ func (w *bufWriter) Write(b []byte) (n int, err error) {
 		return 0, w.err
 	}
 	if w.batchSize == 0 { // buffer has been disabled.
-		return w.conn.Write(b)
+		n, _ = w.conn.WriteBinary(b)
+		return n, w.conn.Flush()
 	}
 	for len(b) > 0 {
 		nn := copy(w.buf[w.offset:], b)
@@ -676,7 +673,8 @@ func (w *bufWriter) Flush() error {
 	if w.onFlush != nil {
 		w.onFlush()
 	}
-	_, w.err = w.conn.Write(w.buf[:w.offset])
+	w.conn.WriteBinary(w.buf[:w.offset])
+	w.err = w.conn.Flush()
 	w.offset = 0
 	return w.err
 }
