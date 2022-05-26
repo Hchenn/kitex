@@ -22,6 +22,7 @@ import (
 
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/codec/protobuf"
+	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 )
 
@@ -61,10 +62,10 @@ func (h *cliTransHandler) Write(ctx context.Context, conn net.Conn, msg remote.M
 }
 
 func (h *cliTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
-	buf := newBuffer(conn.(*clientConn))
-	defer buf.Release(err)
+	reader := np.NewReaderByteBuffer(conn.(*clientConn).s)
+	defer reader.Release(err)
 
-	err = h.codec.Decode(ctx, msg, buf)
+	err = h.codec.Decode(ctx, msg, reader)
 	return
 }
 
