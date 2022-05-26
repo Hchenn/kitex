@@ -50,13 +50,15 @@ func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remo
 	if !ok {
 		return fmt.Errorf("output buffer must implement FrameWrite")
 	}
-	var header [5]byte
 	var data []byte
 	switch t := message.Data().(type) {
 	case bprotoc.FastWrite:
 		// TODO: reuse data buffer when we can free it safely
-		data = make([]byte, t.Size())
-		t.FastWrite(data)
+		l := t.Size()
+		data = make([]byte, l+5)
+		t.FastWrite(data[5:])
+		binary.BigEndian.PutUint32(data[1:5], uint32(l))
+		return writer.WriteData(data)
 	case marshaler:
 		// TODO: reuse data buffer when we can free it safely
 		data = make([]byte, t.Size())
@@ -82,6 +84,7 @@ func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remo
 	if err = writer.WriteData(data); err != nil {
 		return err
 	}
+	var header [5]byte
 	binary.BigEndian.PutUint32(header[1:5], uint32(len(data)))
 	return writer.WriteHeader(header[:])
 }
