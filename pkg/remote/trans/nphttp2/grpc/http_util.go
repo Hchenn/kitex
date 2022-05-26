@@ -626,9 +626,8 @@ func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize
 }
 
 type bufWriter struct {
-	buf       []byte
-	offset    int
 	batchSize int
+	limitSize int
 	conn      netpoll.Writer
 	err       error
 
@@ -637,8 +636,8 @@ type bufWriter struct {
 
 func newBufWriter(conn netpoll.Writer, batchSize int) *bufWriter {
 	return &bufWriter{
-		buf:       make([]byte, batchSize*2),
 		batchSize: batchSize,
+		limitSize: batchSize * 2,
 		conn:      conn,
 	}
 }
@@ -651,12 +650,17 @@ func (w *bufWriter) Write(b []byte) (n int, err error) {
 		n, _ = w.conn.WriteBinary(b)
 		return n, w.conn.Flush()
 	}
-	for len(b) > 0 {
-		nn := copy(w.buf[w.offset:], b)
-		b = b[nn:]
-		w.offset += nn
-		n += nn
-		if w.offset >= w.batchSize {
+	for offset := len(b); offset > 0; offset = len(b) {
+		left := w.limitSize - w.conn.MallocLen()
+		if left < offset {
+			offset = left
+		}
+		dst, _ := w.conn.Malloc(offset)
+		offset = copy(dst, b)
+		b = b[offset:]
+		n += offset
+
+		if w.conn.MallocLen() >= w.batchSize {
 			err = w.Flush()
 		}
 	}
@@ -667,14 +671,16 @@ func (w *bufWriter) Flush() error {
 	if w.err != nil {
 		return w.err
 	}
-	if w.offset == 0 {
+	if w.conn.MallocLen() == 0 {
 		return nil
 	}
 	if w.onFlush != nil {
 		w.onFlush()
 	}
-	w.conn.WriteBinary(w.buf[:w.offset])
 	w.err = w.conn.Flush()
-	w.offset = 0
 	return w.err
+}
+
+func (w *bufWriter) MallocLen() int {
+	return w.conn.MallocLen()
 }

@@ -550,7 +550,7 @@ func (l *loopyWriter) run(remoteAddr string) (err error) {
 			}
 			if gosched {
 				gosched = false
-				if l.framer.writer.offset < minBatchSize {
+				if l.framer.writer.MallocLen() < minBatchSize {
 					runtime.Gosched()
 					continue hasdata
 				}
