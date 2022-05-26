@@ -31,6 +31,7 @@ import (
 
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
+	"github.com/cloudwego/netpoll"
 )
 
 var updateHeaderTblSize = func(e *hpack.Encoder, v uint32) {
@@ -135,8 +136,9 @@ func (c *cleanupStream) isTransportResponseFrame() bool { return c.rst } // Resu
 type dataFrame struct {
 	streamID  uint32
 	endStream bool
-	h         []byte
-	d         []byte
+	//h         []byte
+	//d         []byte
+	d *netpoll.LinkBuffer
 	// onEachWrite is called every time
 	// a part of d is written out.
 	onEachWrite func()
@@ -837,7 +839,8 @@ func (l *loopyWriter) processData() (bool, error) {
 	// As an optimization to keep wire traffic low, data from d is copied to h to make as big as the
 	// maximum possible HTTP2 frame size.
 
-	if len(dataItem.h) == 0 && len(dataItem.d) == 0 { // Empty data frame
+	//if len(dataItem.h) == 0 && len(dataItem.d) == 0 { // Empty data frame
+	if dataItem.d.Len() == 0 { // Empty data frame
 		// Client sends out empty data frame with endStream = true
 		if err := l.framer.WriteData(dataItem.streamID, dataItem.endStream, nil); err != nil {
 			return false, err
@@ -857,7 +860,7 @@ func (l *loopyWriter) processData() (bool, error) {
 		}
 		return false, nil
 	}
-	var buf []byte
+	//var buf []byte
 	// Figure out the maximum size we can send
 	maxSize := http2MaxFrameLen
 	if strQuota := int(l.oiws) - str.bytesOutStanding; strQuota <= 0 { // stream-level flow control.
@@ -870,44 +873,33 @@ func (l *loopyWriter) processData() (bool, error) {
 		maxSize = int(l.sendQuota)
 	}
 	// Compute how much of the header and data we can send within quota and max frame length
-	hSize := min(maxSize, len(dataItem.h))
-	dSize := min(maxSize-hSize, len(dataItem.d))
-	if hSize != 0 {
-		if dSize == 0 {
-			buf = dataItem.h
-		} else {
-			// We can add some data to grpc message header to distribute bytes more equally across frames.
-			// Copy on the stack to avoid generating garbage
-			var localBuf [http2MaxFrameLen]byte
-			copy(localBuf[:hSize], dataItem.h)
-			copy(localBuf[hSize:], dataItem.d[:dSize])
-			buf = localBuf[:hSize+dSize]
-		}
-	} else {
-		buf = dataItem.d
-	}
+	//hSize := min(maxSize, len(dataItem.h))
+	dSize := min(maxSize, dataItem.d.Len())
+	//buf = dataItem.d
 
-	size := hSize + dSize
+	size := dSize
 
 	// Now that outgoing flow controls are checked we can replenish str's write quota
 	str.wq.replenish(size)
 	var endStream bool
 	// If this is the last data message on this stream and all of it can be written in this iteration.
-	if dataItem.endStream && len(dataItem.h)+len(dataItem.d) <= size {
+	if dataItem.endStream && dataItem.d.Len() <= size {
 		endStream = true
 	}
 	if dataItem.onEachWrite != nil {
 		dataItem.onEachWrite()
 	}
-	if err := l.framer.WriteData(dataItem.streamID, endStream, buf[:size]); err != nil {
+	buf, _ := dataItem.d.Next(size)
+	if err := l.framer.WriteData(dataItem.streamID, endStream, buf); err != nil {
 		return false, err
 	}
 	str.bytesOutStanding += size
 	l.sendQuota -= uint32(size)
-	dataItem.h = dataItem.h[hSize:]
-	dataItem.d = dataItem.d[dSize:]
+	//dataItem.h = dataItem.h[hSize:]
+	//dataItem.d = dataItem.d[dSize:]
 
-	if len(dataItem.h) == 0 && len(dataItem.d) == 0 { // All the data from that message was written out.
+	if dataItem.d.Len() == 0 { // All the data from that message was written out.
+		dataItem.d.Close()
 		str.itl.dequeue()
 	}
 	if str.itl.isEmpty() {

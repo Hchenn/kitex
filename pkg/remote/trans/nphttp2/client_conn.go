@@ -27,6 +27,7 @@ import (
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
+	"github.com/cloudwego/netpoll"
 )
 
 type clientConn struct {
@@ -80,15 +81,17 @@ func (c *clientConn) Read(b []byte) (n int, err error) {
 }
 
 func (c *clientConn) Write(b []byte) (n int, err error) {
-	if len(b) < 5 {
-		return 0, io.ErrShortWrite
-	}
-	return c.WriteFrame(b[:5], b[5:])
+	//if len(b) < 5 {
+	//	return 0, io.ErrShortWrite
+	//}
+	//return c.WriteFrame(b[:5], b[5:])
+	return 0, err
 }
 
-func (c *clientConn) WriteFrame(hdr, data []byte) (n int, err error) {
+func (c *clientConn) WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error) {
+	data.Flush()
 	err = c.tr.Write(c.s, hdr, data, &grpc.Options{})
-	return len(hdr) + len(data), convertErrorFromGrpcToKitex(err)
+	return len(hdr) + data.Len(), convertErrorFromGrpcToKitex(err)
 }
 
 func (c *clientConn) LocalAddr() net.Addr                { return c.tr.LocalAddr() }

@@ -17,13 +17,13 @@
 package nphttp2
 
 import (
-	"io"
 	"net"
 	"time"
 
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
+	"github.com/cloudwego/netpoll"
 )
 
 type serverConn struct {
@@ -47,15 +47,17 @@ func (c *serverConn) Read(b []byte) (n int, err error) {
 }
 
 func (c *serverConn) Write(b []byte) (n int, err error) {
-	if len(b) < 5 {
-		return 0, io.ErrShortWrite
-	}
-	return c.WriteFrame(b[:5], b[5:])
+	return 0, err
+	//if len(b) < 5 {
+	//	return 0, io.ErrShortWrite
+	//}
+	//return c.WriteFrame(b[:5], b[5:])
 }
 
-func (c *serverConn) WriteFrame(hdr, data []byte) (n int, err error) {
+func (c *serverConn) WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error) {
+	data.Flush()
 	err = c.tr.Write(c.s, hdr, data, nil)
-	return len(hdr) + len(data), convertErrorFromGrpcToKitex(err)
+	return len(hdr) + data.Len(), convertErrorFromGrpcToKitex(err)
 }
 
 func (c *serverConn) LocalAddr() net.Addr                { return c.tr.LocalAddr() }
