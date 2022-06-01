@@ -35,6 +35,7 @@ import (
 type detectionKey struct{}
 
 type detectionHandler struct {
+	ctx     context.Context
 	handler remote.ServerTransHandler
 }
 
@@ -89,7 +90,7 @@ func (t *svrTransHandler) OnRead(ctx context.Context, conn net.Conn) error {
 	// only need detect once when connection is reused
 	r := ctx.Value(detectionKey{}).(*detectionHandler)
 	if r.handler != nil {
-		return r.handler.OnRead(ctx, conn)
+		return r.handler.OnRead(r.ctx, conn)
 	}
 	// Check the validity of client preface.
 	zr := conn.(netpoll.Connection).Reader()
@@ -107,6 +108,7 @@ func (t *svrTransHandler) OnRead(ctx context.Context, conn net.Conn) error {
 			return err
 		}
 	}
+	r.ctx = ctx
 	r.handler = which
 	return which.OnRead(ctx, conn)
 }
