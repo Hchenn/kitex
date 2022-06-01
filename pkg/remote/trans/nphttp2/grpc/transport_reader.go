@@ -67,6 +67,9 @@ func (r *recvBufferReader) Slice(n int) (_ netpoll.Reader, err error) {
 }
 
 func (r *recvBufferReader) Release() (err error) {
+	if r.last.IsEmpty() {
+		return r.last.Close()
+	}
 	return r.last.Release()
 }
 
