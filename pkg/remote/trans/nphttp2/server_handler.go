@@ -22,6 +22,7 @@ import (
 	"net"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/kitex/pkg/endpoint"
 	"github.com/cloudwego/kitex/pkg/gofunc"
@@ -91,15 +92,15 @@ func (t *svrTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Me
 
 // 只 return write err
 func (t *svrTransHandler) OnRead(ctx context.Context, conn net.Conn) error {
-	tr, err := grpcTransport.NewServerTransport(ctx, conn.(netpoll.Connection), t.opt.GRPCCfg)
-	if err != nil {
-		return err
-	}
-	defer tr.Close()
+	svrTrans := ctx.Value(trans).(*SvrTrans)
+	tr := svrTrans.tr
 
 	tr.HandleStreams(func(s *grpcTransport.Stream) {
 		gofunc.GoFunc(ctx, func() {
-			ri, ctx := t.opt.InitRPCInfoFunc(s.Context(), tr.RemoteAddr())
+			ri := svrTrans.pool.Get().(rpcinfo.RPCInfo)
+			defer svrTrans.pool.Put(ri)
+			ctx := rpcinfo.NewCtxWithRPCInfo(s.Context(), ri)
+
 			// set grpc transport flag before execute metahandler
 			rpcinfo.AsMutableRPCConfig(ri.Config()).SetTransportProtocol(transport.GRPC)
 			var err error
@@ -172,11 +173,33 @@ func (t *svrTransHandler) OnMessage(ctx context.Context, args, result remote.Mes
 	panic("unimplemented")
 }
 
+type transkey int
+
+const trans transkey = 1
+
+type SvrTrans struct {
+	tr   grpcTransport.ServerTransport
+	pool *sync.Pool // value is rpcInfo
+}
+
 // 新连接建立时触发，主要用于服务端，对应 netpoll onPrepare
 func (t *svrTransHandler) OnActive(ctx context.Context, conn net.Conn) (context.Context, error) {
 	// set readTimeout to infinity to avoid streaming break
 	// use keepalive to check the health of connection
 	conn.(netpoll.Connection).SetReadTimeout(grpcTransport.Infinity)
+
+	tr, err := grpcTransport.NewServerTransport(ctx, conn.(netpoll.Connection), t.opt.GRPCCfg)
+	if err != nil {
+		return nil, err
+	}
+	pool := &sync.Pool{
+		New: func() interface{} {
+			// init rpcinfo
+			ri, _ := t.opt.InitRPCInfoFunc(ctx, conn.RemoteAddr())
+			return ri
+		},
+	}
+	ctx = context.WithValue(ctx, trans, &SvrTrans{tr: tr, pool: pool})
 	return ctx, nil
 }
 
@@ -184,6 +207,8 @@ func (t *svrTransHandler) OnActive(ctx context.Context, conn net.Conn) (context.
 func (t *svrTransHandler) OnInactive(ctx context.Context, conn net.Conn) {
 	// recycle rpcinfo
 	rpcinfo.PutRPCInfo(rpcinfo.GetRPCInfo(ctx))
+	tr := ctx.Value(trans).(*SvrTrans).tr
+	tr.Close()
 }
 
 // 传输层 error 回调
