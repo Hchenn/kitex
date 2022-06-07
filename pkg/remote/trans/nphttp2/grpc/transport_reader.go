@@ -7,27 +7,58 @@ import (
 var _ netpoll.Reader = &recvBufferReader{}
 
 func (r *recvBufferReader) Next(n int) (p []byte, err error) {
-	err = r.check(n)
-	if err != nil {
-		return nil, err
+	if r.err != nil {
+		return nil, r.err
 	}
-	return r.last.Next(n)
+	if r.last.Len() == 0 {
+		// fill
+		if r.closeStream != nil {
+			r.err = r.fillClient()
+		} else {
+			r.err = r.fill()
+		}
+		if r.err != nil {
+			return p, r.err
+		}
+	}
+
+	if r.last.Len() >= n {
+		return r.last.Next(n)
+	}
+
+	p = make([]byte, n)
+	pIdx, pDelta := 0, n
+	for {
+		l := r.last.Len()
+		switch {
+		case l >= pDelta:
+			b1, _ := r.last.Next(pDelta)
+			copy(p[pIdx:], b1)
+			return p, nil
+		case l > 0:
+			b1, _ := r.last.Next(l)
+			pIdx += copy(p[pIdx:], b1)
+			pDelta = n - pIdx
+		}
+
+		// fill
+		if r.closeStream != nil {
+			r.err = r.fillClient()
+		} else {
+			r.err = r.fill()
+		}
+		if r.err != nil {
+			return p, r.err
+		}
+	}
 }
 
 func (r *recvBufferReader) Peek(n int) (buf []byte, err error) {
-	err = r.check(n)
-	if err != nil {
-		return nil, err
-	}
-	return r.last.Peek(n)
+	panic("peek is not implement")
 }
 
 func (r *recvBufferReader) Skip(n int) (err error) {
-	err = r.check(n)
-	if err != nil {
-		return err
-	}
-	return r.last.Skip(n)
+	panic("skip is not implement")
 }
 
 func (r *recvBufferReader) Until(delim byte) (line []byte, err error) {
@@ -35,63 +66,27 @@ func (r *recvBufferReader) Until(delim byte) (line []byte, err error) {
 }
 
 func (r *recvBufferReader) ReadString(n int) (s string, err error) {
-	err = r.check(n)
-	if err != nil {
-		return s, err
-	}
-	return r.last.ReadString(n)
+	panic("readstring is not implement")
 }
 
 func (r *recvBufferReader) ReadBinary(n int) (p []byte, err error) {
-	err = r.check(n)
-	if err != nil {
-		return p, err
-	}
-	return r.last.ReadBinary(n)
+	panic("readbinary is not implement")
 }
 
 func (r *recvBufferReader) ReadByte() (b byte, err error) {
-	err = r.check(1)
-	if err != nil {
-		return b, err
-	}
-	return r.last.ReadByte()
+	panic("readbyte is not implement")
 }
 
 func (r *recvBufferReader) Slice(n int) (_ netpoll.Reader, err error) {
-	err = r.check(n)
-	if err != nil {
-		return nil, err
-	}
-	return r.last.Slice(n)
+	panic("slice is not implement")
 }
 
 func (r *recvBufferReader) Release() (err error) {
-	if r.last.IsEmpty() {
-		return r.last.Close()
-	}
 	return r.last.Release()
 }
 
 func (r *recvBufferReader) Len() (length int) {
 	return r.last.Len()
-}
-
-func (r *recvBufferReader) check(n int) (err error) {
-	if r.err != nil {
-		return r.err
-	}
-	for r.last.Len() < n {
-		if r.closeStream != nil {
-			r.err = r.fillClient()
-		} else {
-			r.err = r.fill()
-		}
-		if r.err != nil {
-			return r.err
-		}
-	}
-	return nil
 }
 
 var _ netpoll.Reader = &transportReader{}

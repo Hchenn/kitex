@@ -355,7 +355,7 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 			ctx:     s.ctx,
 			ctxDone: s.ctxDone,
 			recv:    s.buf,
-			last:    netpoll.NewLinkBuffer(0),
+			last:    &netpoll.LinkBuffer{},
 		},
 		windowHandler: func(n int) {
 			t.updateWindow(s, uint32(n))
@@ -375,6 +375,7 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 // traceCtx attaches trace to ctx and returns the new context.
 func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
 	defer close(t.readerDone)
+	tr := t.conn.(netpoll.Connection).Reader()
 	for {
 		t.controlBuf.throttle()
 		frame, err := t.framer.ReadFrame()
@@ -426,7 +427,7 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
 		default:
 			klog.CtxErrorf(t.ctx, "transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
 		}
-		t.conn.(netpoll.Connection).Reader().Release()
+		tr.Release()
 	}
 }
 

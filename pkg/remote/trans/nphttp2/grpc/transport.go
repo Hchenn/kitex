@@ -185,14 +185,8 @@ func (r *recvBufferReader) fillAdditional(m recvMsg) (err error) {
 	if m.err != nil || m.buffer == nil {
 		return m.err
 	}
-	if r.last.IsEmpty() {
-		r.last.Close()
-		r.last = m.buffer
-		m.buffer = nil
-	} else {
-		r.last.WriteBuffer(m.buffer)
-		r.last.Flush()
-	}
+	r.last = m.buffer
+	m.buffer = nil
 	return nil
 }
 

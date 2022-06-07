@@ -257,7 +257,7 @@ func (t *http2Client) newStream(ctx context.Context, callHdr *CallHdr) *Stream {
 			ctx:     s.ctx,
 			ctxDone: s.ctx.Done(),
 			recv:    s.buf,
-			last:    netpoll.NewLinkBuffer(0),
+			last:    &netpoll.LinkBuffer{},
 			closeStream: func(err error) {
 				t.CloseStream(s, err)
 			},
