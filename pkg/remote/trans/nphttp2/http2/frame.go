@@ -650,6 +650,52 @@ func validStreamID(streamID uint32) bool {
 	return streamID != 0 && streamID&(1<<31) == 0
 }
 
+// WriteDataNocopy writes a DATA frame.
+//
+// It will perform exactly one Write to the underlying Writer.
+// It is the caller's responsibility not to violate the maximum frame size
+// and to not call other Write methods concurrently.
+func (f *Framer) WriteDataNocopy(streamID uint32, endStream bool, data []byte) error {
+	if !validStreamID(streamID) && !f.AllowIllegalWrites {
+		return errStreamID
+	}
+
+	length := len(data)
+	if length >= (1 << 24) {
+		return ErrFrameTooLarge
+	}
+
+	var flags Flags
+	if endStream {
+		flags |= FlagDataEndStream
+	}
+
+	wbuf := []byte{
+		byte(length >> 16),
+		byte(length >> 8),
+		byte(length),
+		byte(FrameData),
+		byte(flags),
+		byte(streamID >> 24),
+		byte(streamID >> 16),
+		byte(streamID >> 8),
+		byte(streamID),
+	}
+
+	if f.logWrites {
+		f.logWrite()
+	}
+
+	n, err := f.w.Write(wbuf)
+	if err == nil && n == len(wbuf) {
+		n, err = f.w.Write(data)
+	}
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
 // WriteData writes a DATA frame.
 //
 // It will perform exactly one Write to the underlying Writer.

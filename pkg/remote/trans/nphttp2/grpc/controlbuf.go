@@ -890,7 +890,7 @@ func (l *loopyWriter) processData() (bool, error) {
 		dataItem.onEachWrite()
 	}
 	buf, _ := dataItem.d.Next(size)
-	if err := l.framer.WriteData(dataItem.streamID, endStream, buf); err != nil {
+	if err := l.framer.WriteDataNocopy(dataItem.streamID, endStream, buf); err != nil {
 		return false, err
 	}
 	str.bytesOutStanding += size
