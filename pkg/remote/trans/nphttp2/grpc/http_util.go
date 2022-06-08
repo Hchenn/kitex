@@ -631,6 +631,8 @@ type bufWriter struct {
 	conn      netpoll.Writer
 	err       error
 
+	offset  int
+	buf     []byte
 	onFlush func()
 }
 
@@ -646,38 +648,57 @@ func (w *bufWriter) Write(b []byte) (n int, err error) {
 	if w.err != nil {
 		return 0, w.err
 	}
-	if w.batchSize == 0 { // buffer has been disabled.
-		n, _ = w.conn.WriteBinary(b)
-		return n, w.conn.Flush()
-	}
-	for offset := len(b); offset > 0; offset = len(b) {
-		left := w.limitSize - w.conn.MallocLen()
-		if left < offset {
-			offset = left
+	//if w.batchSize == 0 { // buffer has been disabled.
+	//	n, _ = w.conn.WriteBinary(b)
+	//	return n, w.conn.Flush()
+	//}
+	for len(b) > 0 {
+		if w.buf == nil {
+			w.buf, _ = w.conn.Malloc(w.limitSize)
 		}
-		dst, _ := w.conn.Malloc(offset)
-		offset = copy(dst, b)
-		b = b[offset:]
-		n += offset
-
-		if w.conn.MallocLen() >= w.batchSize {
+		nn := copy(w.buf[w.offset:], b)
+		b = b[nn:]
+		w.offset += nn
+		n += nn
+		if w.offset >= w.batchSize {
 			err = w.Flush()
 		}
 	}
 	return n, err
+	//for offset := len(b); offset > 0; offset = len(b) {
+	//	left := w.limitSize - w.conn.MallocLen()
+	//	if left < offset {
+	//		offset = left
+	//	}
+	//	dst, _ := w.conn.Malloc(offset)
+	//	offset = copy(dst, b)
+	//	b = b[offset:]
+	//	n += offset
+	//
+	//	if w.conn.MallocLen() >= w.batchSize {
+	//		err = w.Flush()
+	//	}
+	//}
+	//return n, err
 }
 
 func (w *bufWriter) Flush() error {
 	if w.err != nil {
 		return w.err
 	}
-	if w.conn.MallocLen() == 0 {
+	if w.offset == 0 {
 		return nil
 	}
+	//if w.conn.MallocLen() == 0 {
+	//	return nil
+	//}
 	if w.onFlush != nil {
 		w.onFlush()
 	}
+	w.conn.MallocAck(w.offset)
 	w.err = w.conn.Flush()
+	w.buf = nil
+	w.offset = 0
 	return w.err
 }
 

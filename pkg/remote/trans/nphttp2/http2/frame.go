@@ -739,12 +739,37 @@ func (f *Framer) WriteDataPadded(streamID uint32, endStream bool, data, pad []by
 		flags |= FlagDataPadded
 	}
 	f.startWrite(FrameData, flags, streamID)
+
+	length := len(data)
 	if pad != nil {
 		f.wbuf = append(f.wbuf, byte(len(pad)))
+		length += len(pad) + 1
 	}
-	f.wbuf = append(f.wbuf, data...)
-	f.wbuf = append(f.wbuf, pad...)
-	return f.endWrite()
+
+	if length >= (1 << 24) {
+		return ErrFrameTooLarge
+	}
+	f.wbuf[0] = byte(length >> 16)
+	f.wbuf[1] = byte(length >> 8)
+	f.wbuf[2] = byte(length)
+
+	if f.logWrites {
+		f.logWrite()
+	}
+
+	var err error
+	var n1, n2, n3 int
+	n1, err = f.w.Write(f.wbuf)
+	if err == nil && n1 == len(f.wbuf) {
+		n2, err = f.w.Write(data)
+	}
+	if err == nil && n2 == len(data) && pad != nil {
+		n3, err = f.w.Write(pad)
+	}
+	if err == nil && n1+n2+n3 != len(f.wbuf)+len(data)+len(pad) {
+		err = io.ErrShortWrite
+	}
+	return err
 }
 
 // A SettingsFrame conveys configuration parameters that affect how
