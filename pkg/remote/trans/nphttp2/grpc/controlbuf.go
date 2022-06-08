@@ -23,6 +23,7 @@ package grpc
 import (
 	"bytes"
 	"fmt"
+	"github.com/bytedance/gopkg/lang/mcache"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -899,8 +900,10 @@ func (l *loopyWriter) processData() (bool, error) {
 	dataItem.d = dataItem.d[dSize:]
 
 	if len(dataItem.d) == 0 { // All the data from that message was written out.
-		//mcache.Free(dataItem.dptr)
-		//dataItem.dptr = nil
+		if len(dataItem.dptr) > 0 {
+			mcache.Free(dataItem.dptr)
+			dataItem.dptr = nil
+		}
 		str.itl.dequeue()
 	}
 	if str.itl.isEmpty() {
