@@ -16,18 +16,12 @@
 
 package nphttp2
 
-import (
-	"net"
-
-	"github.com/cloudwego/netpoll"
-)
-
 // grpcConn implement WriteFrame
-type grpcConn interface {
-	net.Conn
-	// WriteFrame set header and data buffer into frame with nocopy
-	WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error)
-}
+//type grpcConn interface {
+//	net.Conn
+//	// WriteFrame set header and data buffer into frame with nocopy
+//	WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error)
+//}
 
 //
 //type buffer struct {

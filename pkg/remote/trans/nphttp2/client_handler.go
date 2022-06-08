@@ -24,7 +24,6 @@ import (
 	"github.com/cloudwego/kitex/pkg/remote/codec/protobuf"
 	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
-	"github.com/cloudwego/netpoll"
 )
 
 type cliTransHandlerFactory struct{}
@@ -53,16 +52,12 @@ type cliTransHandler struct {
 }
 
 func (h *cliTransHandler) Write(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
-	buf := netpoll.NewLinkBuffer()
-	writer := np.NewWriterByteBuffer(buf)
-	defer writer.Release(err)
-
-	if err = h.codec.Encode(ctx, msg, writer); err != nil {
+	cc := conn.(*clientConn)
+	if err = h.codec.Encode(ctx, msg, cc); err != nil {
 		return err
 	}
 
-	_, err = conn.(*clientConn).WriteFrame(nil, buf)
-	return err
+	return cc.Flush()
 }
 
 func (h *cliTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {

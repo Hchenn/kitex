@@ -49,9 +49,12 @@ func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remo
 	case bprotoc.FastWrite:
 		// TODO: reuse data buffer when we can free it safely
 		l := t.Size()
-		wbuf, _ := out.Malloc(l + 5)
+		//wbuf, _ := out.Malloc(l + 5)
+		//wbuf := mcache.Malloc(l + 5)
+		wbuf := make([]byte, l+5)
 		t.FastWrite(wbuf[5:])
 		binary.BigEndian.PutUint32(wbuf[1:5], uint32(l))
+		out.Write(wbuf)
 		return nil
 	case marshaler:
 		// TODO: reuse data buffer when we can free it safely

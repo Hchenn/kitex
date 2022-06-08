@@ -31,6 +31,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudwego/netpoll"
+	"golang.org/x/net/http2/hpack"
+
 	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
@@ -38,9 +41,6 @@ import (
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
-
-	"github.com/cloudwego/netpoll"
-	"golang.org/x/net/http2/hpack"
 )
 
 // http2Client implements the ClientTransport interface with HTTP2.
@@ -568,7 +568,7 @@ func (t *http2Client) GracefulClose() {
 
 // Write formats the data into HTTP2 data frame(s) and sends it out. The caller
 // should proceed only if Write returns nil.
-func (t *http2Client) Write(s *Stream, hdr []byte, data *netpoll.LinkBuffer, opts *Options) error {
+func (t *http2Client) Write(s *Stream, hdr, data []byte, opts *Options) error {
 	if opts.Last {
 		// If it's the last message, update stream state.
 		if !s.compareAndSwapState(streamActive, streamWriteDone) {
@@ -580,11 +580,12 @@ func (t *http2Client) Write(s *Stream, hdr []byte, data *netpoll.LinkBuffer, opt
 	df := &dataFrame{
 		streamID:  s.id,
 		endStream: opts.Last,
-		//h:         hdr,
-		d: data,
+		h:         hdr,
+		d:         data,
+		dptr:      data,
 	}
 	if hdr != nil || data != nil { // If it's not an empty data frame, check quota.
-		if err := s.wq.get(int32(data.Len())); err != nil {
+		if err := s.wq.get(int32(len(data))); err != nil {
 			return err
 		}
 	}

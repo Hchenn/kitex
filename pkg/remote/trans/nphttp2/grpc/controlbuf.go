@@ -31,7 +31,6 @@ import (
 
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
-	"github.com/cloudwego/netpoll"
 )
 
 var updateHeaderTblSize = func(e *hpack.Encoder, v uint32) {
@@ -136,9 +135,10 @@ func (c *cleanupStream) isTransportResponseFrame() bool { return c.rst } // Resu
 type dataFrame struct {
 	streamID  uint32
 	endStream bool
-	//h         []byte
-	//d         []byte
-	d *netpoll.LinkBuffer
+	h         []byte
+	d         []byte
+	dptr      []byte
+	//d *netpoll.LinkBuffer
 	// onEachWrite is called every time
 	// a part of d is written out.
 	onEachWrite func()
@@ -839,8 +839,8 @@ func (l *loopyWriter) processData() (bool, error) {
 	// As an optimization to keep wire traffic low, data from d is copied to h to make as big as the
 	// maximum possible HTTP2 frame size.
 
-	//if len(dataItem.h) == 0 && len(dataItem.d) == 0 { // Empty data frame
-	if dataItem.d.Len() == 0 { // Empty data frame
+	if len(dataItem.h) == 0 && len(dataItem.d) == 0 { // Empty data frame
+		//if dataItem.d.Len() == 0 { // Empty data frame
 		// Client sends out empty data frame with endStream = true
 		if err := l.framer.WriteData(dataItem.streamID, dataItem.endStream, nil); err != nil {
 			return false, err
@@ -874,8 +874,8 @@ func (l *loopyWriter) processData() (bool, error) {
 	}
 	// Compute how much of the header and data we can send within quota and max frame length
 	//hSize := min(maxSize, len(dataItem.h))
-	dSize := min(maxSize, dataItem.d.Len())
-	//buf = dataItem.d
+	dSize := min(maxSize, len(dataItem.d))
+	buf := dataItem.d
 
 	size := dSize
 
@@ -883,23 +883,24 @@ func (l *loopyWriter) processData() (bool, error) {
 	str.wq.replenish(size)
 	var endStream bool
 	// If this is the last data message on this stream and all of it can be written in this iteration.
-	if dataItem.endStream && dataItem.d.Len() <= size {
+	if dataItem.endStream && len(dataItem.d) <= size {
 		endStream = true
 	}
 	if dataItem.onEachWrite != nil {
 		dataItem.onEachWrite()
 	}
-	buf, _ := dataItem.d.Next(size)
-	if err := l.framer.WriteData(dataItem.streamID, endStream, buf); err != nil {
+	//buf, _ := dataItem.d.Next(size)
+	if err := l.framer.WriteData(dataItem.streamID, endStream, buf[:size]); err != nil {
 		return false, err
 	}
 	str.bytesOutStanding += size
 	l.sendQuota -= uint32(size)
 	//dataItem.h = dataItem.h[hSize:]
-	//dataItem.d = dataItem.d[dSize:]
+	dataItem.d = dataItem.d[dSize:]
 
-	if dataItem.d.Len() == 0 { // All the data from that message was written out.
-		dataItem.d.Close()
+	if len(dataItem.d) == 0 { // All the data from that message was written out.
+		//mcache.Free(dataItem.dptr)
+		//dataItem.dptr = nil
 		str.itl.dequeue()
 	}
 	if str.itl.isEmpty() {

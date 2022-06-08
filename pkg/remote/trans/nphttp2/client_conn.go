@@ -24,18 +24,20 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
-	"github.com/cloudwego/netpoll"
 )
 
 type clientConn struct {
-	tr grpc.ClientTransport
-	s  *grpc.Stream
+	tr  grpc.ClientTransport
+	s   *grpc.Stream
+	buf []byte
 }
 
-var _ grpcConn = (*clientConn)(nil)
+//var _ grpcConn = (*clientConn)(nil)
+var _ remote.ByteBuffer = (*clientConn)(nil)
 
 func newClientConn(ctx context.Context, tr grpc.ClientTransport, addr string) (*clientConn, error) {
 	ri := rpcinfo.GetRPCInfo(ctx)
@@ -81,18 +83,19 @@ func (c *clientConn) Read(b []byte) (n int, err error) {
 }
 
 func (c *clientConn) Write(b []byte) (n int, err error) {
+	c.buf = b
+	return
 	//if len(b) < 5 {
 	//	return 0, io.ErrShortWrite
 	//}
 	//return c.WriteFrame(b[:5], b[5:])
-	return 0, err
 }
 
-func (c *clientConn) WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error) {
-	data.Flush()
-	err = c.tr.Write(c.s, hdr, data, &grpc.Options{})
-	return len(hdr) + data.Len(), convertErrorFromGrpcToKitex(err)
-}
+//func (c *clientConn) WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error) {
+//	data.Flush()
+//	err = c.tr.Write(c.s, hdr, data, &grpc.Options{})
+//	return len(hdr) + data.Len(), convertErrorFromGrpcToKitex(err)
+//}
 
 func (c *clientConn) LocalAddr() net.Addr                { return c.tr.LocalAddr() }
 func (c *clientConn) RemoteAddr() net.Addr               { return c.tr.RemoteAddr() }
@@ -110,3 +113,27 @@ func (c *clientConn) Close() error {
 
 func (c *clientConn) Header() (metadata.MD, error) { return c.s.Header() }
 func (c *clientConn) Trailer() metadata.MD         { return c.s.Trailer() }
+
+func (c *clientConn) Next(n int) (p []byte, err error)       { return }
+func (c *clientConn) Peek(n int) (buf []byte, err error)     { return }
+func (c *clientConn) Skip(n int) (err error)                 { return }
+func (c *clientConn) Release(e error) (err error)            { return }
+func (c *clientConn) ReadableLen() (n int)                   { return }
+func (c *clientConn) ReadLen() (n int)                       { return }
+func (c *clientConn) ReadString(n int) (s string, err error) { return }
+func (c *clientConn) ReadBinary(n int) (p []byte, err error) { return }
+func (c *clientConn) Malloc(n int) (buf []byte, err error) {
+	//c.buf = mcache.Malloc(n)
+	return c.buf, nil
+}
+func (c *clientConn) MallocLen() (length int)                 { return }
+func (c *clientConn) WriteString(s string) (n int, err error) { return }
+func (c *clientConn) WriteBinary(b []byte) (n int, err error) { return }
+func (c *clientConn) Flush() (err error) {
+	err = c.tr.Write(c.s, nil, c.buf, &grpc.Options{})
+	c.buf = nil
+	return convertErrorFromGrpcToKitex(err)
+}
+func (c *clientConn) NewBuffer() remote.ByteBuffer                   { return nil }
+func (c *clientConn) AppendBuffer(buf remote.ByteBuffer) (err error) { return }
+func (c *clientConn) Bytes() (buf []byte, err error)                 { return }

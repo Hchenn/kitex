@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/cloudwego/netpoll"
+
 	"github.com/cloudwego/kitex/pkg/endpoint"
 	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/kerrors"
@@ -38,7 +40,6 @@ import (
 	"github.com/cloudwego/kitex/pkg/serviceinfo"
 	"github.com/cloudwego/kitex/pkg/streaming"
 	"github.com/cloudwego/kitex/transport"
-	"github.com/cloudwego/netpoll"
 )
 
 type svrTransHandlerFactory struct{}
@@ -70,16 +71,14 @@ type svrTransHandler struct {
 }
 
 func (t *svrTransHandler) Write(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
-	buf := netpoll.NewLinkBuffer()
-	writer := np.NewWriterByteBuffer(buf)
-	defer writer.Release(err)
-
-	if err = t.codec.Encode(ctx, msg, writer); err != nil {
+	sc := conn.(*serverConn)
+	if err = t.codec.Encode(ctx, msg, sc); err != nil {
 		return err
 	}
-
-	_, err = conn.(*serverConn).WriteFrame(nil, buf)
-	return err
+	err = sc.tr.Write(sc.s, nil, sc.buf, nil)
+	sc.buf = nil
+	return convertErrorFromGrpcToKitex(err)
+	//return sc.Flush()
 }
 
 func (t *svrTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
