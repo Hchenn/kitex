@@ -34,14 +34,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudwego/kitex/pkg/gofunc"
-	"github.com/cloudwego/kitex/pkg/klog"
-	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
-	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 	"github.com/cloudwego/netpoll"
-	http2 "golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/cloudwego/kitex/pkg/gofunc"
+	"github.com/cloudwego/kitex/pkg/klog"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 )
 
 var (
@@ -107,8 +108,6 @@ type http2Server struct {
 	// RPCs go down to 0.
 	// When the connection is busy, this value is set to 0.
 	idle time.Time
-
-	bufferPool *bufferPool
 }
 
 // newHTTP2Server constructs a ServerTransport based on HTTP2. ConnectionError is
@@ -211,7 +210,6 @@ func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig) (_
 		kep:               kep,
 		idle:              time.Now(),
 		initialWindowSize: int32(iwz),
-		bufferPool:        newBufferPool(),
 	}
 	t.controlBuf = newControlBuffer(t.done)
 	if dynamicWindow {
@@ -354,10 +352,10 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 	s.wq = newWriteQuota(defaultWriteQuota, s.ctxDone)
 	s.trReader = &transportReader{
 		reader: &recvBufferReader{
-			ctx:        s.ctx,
-			ctxDone:    s.ctxDone,
-			recv:       s.buf,
-			freeBuffer: t.bufferPool.put,
+			ctx:     s.ctx,
+			ctxDone: s.ctxDone,
+			recv:    s.buf,
+			last:    &netpoll.LinkBuffer{},
 		},
 		windowHandler: func(n int) {
 			t.updateWindow(s, uint32(n))
@@ -377,6 +375,7 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 // traceCtx attaches trace to ctx and returns the new context.
 func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
 	defer close(t.readerDone)
+	tr := t.conn.(netpoll.Connection).Reader()
 	for {
 		t.controlBuf.throttle()
 		frame, err := t.framer.ReadFrame()
@@ -428,6 +427,7 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
 		default:
 			klog.CtxErrorf(t.ctx, "transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
 		}
+		tr.Release()
 	}
 }
 
@@ -533,18 +533,15 @@ func (t *http2Server) handleData(f *http2.DataFrame) {
 			return
 		}
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
-			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+			if w := s.fc.onRead(size - uint32(f.Data().Len())); w > 0 {
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
 		}
 		// TODO(bradfitz, zhaoq): A copy is required here because there is no
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
-		if len(f.Data()) > 0 {
-			buffer := t.bufferPool.get()
-			buffer.Reset()
-			buffer.Write(f.Data())
-			s.write(recvMsg{buffer: buffer})
+		if data := f.Data(); data.Len() > 0 {
+			s.write(recvMsg{buffer: data})
 		}
 	}
 	if f.Header().Flags.Has(http2.FlagDataEndStream) {
@@ -820,9 +817,10 @@ func (t *http2Server) Write(s *Stream, hdr, data []byte, opts *Options) error {
 		streamID:    s.id,
 		h:           hdr,
 		d:           data,
+		dptr:        data,
 		onEachWrite: t.setResetPingStrikes,
 	}
-	if err := s.wq.get(int32(len(hdr) + len(data))); err != nil {
+	if err := s.wq.get(int32(len(data))); err != nil {
 		select {
 		case <-t.done:
 			return ErrConnClosing

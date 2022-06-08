@@ -17,7 +17,6 @@
 package nphttp2
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -357,17 +356,15 @@ func newMockServerTransport(npConn *mockNetpollConn) (grpc.ServerTransport, erro
 }
 
 func mockStreamRecv(s *grpc.Stream, data string) {
-	buffer := new(bytes.Buffer)
-	buffer.Reset()
-	buffer.Write([]byte(data))
+	buffer := netpoll.NewLinkBuffer()
+	buffer.WriteBinary([]byte(data))
 	grpc.StreamWrite(s, buffer)
 }
 
 func newMockStreamRecvHelloRequest(s *grpc.Stream) {
 	hdr := []byte{0, 0, 0, 0, 6, 10, 4, 116, 101, 115, 116, 0}
-	buffer := new(bytes.Buffer)
-	buffer.Reset()
-	buffer.Write(hdr)
+	buffer := netpoll.NewLinkBuffer()
+	buffer.WriteBinary(hdr)
 	grpc.StreamWrite(s, buffer)
 }
 

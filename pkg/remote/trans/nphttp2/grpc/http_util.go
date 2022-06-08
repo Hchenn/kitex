@@ -21,11 +21,9 @@
 package grpc
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -36,8 +34,10 @@ import (
 
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
-	"golang.org/x/net/http2"
+
+	"github.com/cloudwego/netpoll"
 	"golang.org/x/net/http2/hpack"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
@@ -609,16 +609,12 @@ type framer struct {
 }
 
 func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize uint32) *framer {
-	w := newBufWriter(conn, int(writeBufferSize))
-
-	var r io.Reader = conn
-	if readBufferSize > 0 {
-		r = bufio.NewReaderSize(r, int(readBufferSize))
-	}
-
+	npConn := conn.(netpoll.Connection)
+	reader, writer := npConn.Reader(), npConn.Writer()
+	w := newBufWriter(writer, int(writeBufferSize))
 	fr := &framer{
 		writer: w,
-		Framer: http2.NewFramer(w, r),
+		Framer: http2.NewFramer(w, reader),
 	}
 	fr.SetMaxReadFrameSize(http2MaxFrameLen)
 	// Opt-in to Frame reuse API on framer to reduce garbage.
@@ -630,19 +626,20 @@ func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize
 }
 
 type bufWriter struct {
-	buf       []byte
-	offset    int
 	batchSize int
-	conn      net.Conn
+	limitSize int
+	conn      netpoll.Writer
 	err       error
 
+	offset  int
+	buf     []byte
 	onFlush func()
 }
 
-func newBufWriter(conn net.Conn, batchSize int) *bufWriter {
+func newBufWriter(conn netpoll.Writer, batchSize int) *bufWriter {
 	return &bufWriter{
-		buf:       make([]byte, batchSize*2),
 		batchSize: batchSize,
+		limitSize: batchSize * 2,
 		conn:      conn,
 	}
 }
@@ -651,10 +648,14 @@ func (w *bufWriter) Write(b []byte) (n int, err error) {
 	if w.err != nil {
 		return 0, w.err
 	}
-	if w.batchSize == 0 { // buffer has been disabled.
-		return w.conn.Write(b)
-	}
+	//if w.batchSize == 0 { // buffer has been disabled.
+	//	n, _ = w.conn.WriteBinary(b)
+	//	return n, w.conn.Flush()
+	//}
 	for len(b) > 0 {
+		if w.buf == nil {
+			w.buf, _ = w.conn.Malloc(w.limitSize)
+		}
 		nn := copy(w.buf[w.offset:], b)
 		b = b[nn:]
 		w.offset += nn
@@ -664,6 +665,21 @@ func (w *bufWriter) Write(b []byte) (n int, err error) {
 		}
 	}
 	return n, err
+	//for offset := len(b); offset > 0; offset = len(b) {
+	//	left := w.limitSize - w.conn.MallocLen()
+	//	if left < offset {
+	//		offset = left
+	//	}
+	//	dst, _ := w.conn.Malloc(offset)
+	//	offset = copy(dst, b)
+	//	b = b[offset:]
+	//	n += offset
+	//
+	//	if w.conn.MallocLen() >= w.batchSize {
+	//		err = w.Flush()
+	//	}
+	//}
+	//return n, err
 }
 
 func (w *bufWriter) Flush() error {
@@ -673,10 +689,19 @@ func (w *bufWriter) Flush() error {
 	if w.offset == 0 {
 		return nil
 	}
+	//if w.conn.MallocLen() == 0 {
+	//	return nil
+	//}
 	if w.onFlush != nil {
 		w.onFlush()
 	}
-	_, w.err = w.conn.Write(w.buf[:w.offset])
+	w.conn.MallocAck(w.offset)
+	w.err = w.conn.Flush()
+	w.buf = nil
 	w.offset = 0
 	return w.err
+}
+
+func (w *bufWriter) MallocLen() int {
+	return w.conn.MallocLen()
 }

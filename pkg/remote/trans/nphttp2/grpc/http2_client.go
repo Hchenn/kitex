@@ -31,14 +31,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudwego/netpoll"
+	"golang.org/x/net/http2/hpack"
+
 	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc/syscall"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/http2"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/metadata"
 	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/hpack"
 )
 
 // http2Client implements the ClientTransport interface with HTTP2.
@@ -98,8 +100,6 @@ type http2Client struct {
 	kpDormant bool
 	onGoAway  func(GoAwayReason)
 	onClose   func()
-
-	bufferPool *bufferPool
 }
 
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
@@ -171,7 +171,6 @@ func newHTTP2Client(ctx context.Context, conn net.Conn, opts ConnectOptions,
 		streamsQuotaAvailable: make(chan struct{}, 1),
 		onGoAway:              onGoAway,
 		onClose:               onClose,
-		bufferPool:            newBufferPool(),
 	}
 	t.controlBuf = newControlBuffer(t.ctx.Done())
 	if opts.InitialWindowSize >= defaultWindowSize {
@@ -258,10 +257,10 @@ func (t *http2Client) newStream(ctx context.Context, callHdr *CallHdr) *Stream {
 			ctx:     s.ctx,
 			ctxDone: s.ctx.Done(),
 			recv:    s.buf,
+			last:    &netpoll.LinkBuffer{},
 			closeStream: func(err error) {
 				t.CloseStream(s, err)
 			},
-			freeBuffer: t.bufferPool.put,
 		},
 		windowHandler: func(n int) {
 			t.updateWindow(s, uint32(n))
@@ -583,9 +582,10 @@ func (t *http2Client) Write(s *Stream, hdr, data []byte, opts *Options) error {
 		endStream: opts.Last,
 		h:         hdr,
 		d:         data,
+		dptr:      data,
 	}
 	if hdr != nil || data != nil { // If it's not an empty data frame, check quota.
-		if err := s.wq.get(int32(len(hdr) + len(data))); err != nil {
+		if err := s.wq.get(int32(len(data))); err != nil {
 			return err
 		}
 	}
@@ -686,18 +686,15 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 			return
 		}
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
-			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+			if w := s.fc.onRead(size - uint32(f.Data().Len())); w > 0 {
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
 		}
 		// TODO(bradfitz, zhaoq): A copy is required here because there is no
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
-		if len(f.Data()) > 0 {
-			buffer := t.bufferPool.get()
-			buffer.Reset()
-			buffer.Write(f.Data())
-			s.write(recvMsg{buffer: buffer})
+		if data := f.Data(); data.Len() > 0 {
+			s.write(recvMsg{buffer: data})
 		}
 	}
 	// The server has closed the stream without sending trailers.  Record that
@@ -1013,6 +1010,7 @@ func (t *http2Client) reader() {
 		default:
 			klog.Warnf("transport: http2Client.reader got unhandled frame type %v.", frame)
 		}
+		t.conn.(netpoll.Connection).Reader().Release()
 	}
 }
 

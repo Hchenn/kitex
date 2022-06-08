@@ -16,148 +16,142 @@
 
 package nphttp2
 
-import (
-	"net"
-	"sync"
-
-	"github.com/cloudwego/kitex/pkg/remote"
-)
-
 // grpcConn implement WriteFrame
-type grpcConn interface {
-	net.Conn
-	// WriteFrame set header and data buffer into frame with nocopy
-	WriteFrame(hdr, data []byte) (n int, err error)
-}
+//type grpcConn interface {
+//	net.Conn
+//	// WriteFrame set header and data buffer into frame with nocopy
+//	WriteFrame(hdr []byte, data *netpoll.LinkBuffer) (n int, err error)
+//}
 
-type buffer struct {
-	conn       grpcConn
-	rbuf       []byte // for read
-	whdr, wbuf []byte // for write
-}
-
-var (
-	_ remote.ByteBuffer = (*buffer)(nil)
-	_ remote.FrameWrite = (*buffer)(nil)
-)
-
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return &buffer{
-			rbuf: make([]byte, 0, 4096),
-			wbuf: nil,
-			whdr: nil,
-		}
-	},
-}
-
-func newBuffer(conn grpcConn) *buffer {
-	buf := bufferPool.Get().(*buffer)
-	buf.conn = conn
-	return buf
-}
-
-func (b *buffer) growRbuf(n int) {
-	capacity := cap(b.rbuf)
-	if capacity >= n {
-		return
-	}
-	buf := make([]byte, 0, 2*capacity+n)
-	b.rbuf = buf
-}
-
-func (b *buffer) Next(n int) (p []byte, err error) {
-	b.growRbuf(n)
-	_, err = b.conn.Read(b.rbuf[:n])
-	if err != nil {
-		return nil, err
-	}
-	return b.rbuf[:n], nil
-}
-
-func (b *buffer) WriteHeader(buf []byte) (err error) {
-	b.whdr = buf
-	return nil
-}
-
-func (b *buffer) WriteData(buf []byte) (err error) {
-	b.wbuf = buf
-	return nil
-}
-
-func (b *buffer) Flush() (err error) {
-	_, err = b.conn.WriteFrame(b.whdr, b.wbuf)
-	b.whdr = nil
-	b.wbuf = nil
-	return err
-}
-
-func (b *buffer) Release(e error) (err error) {
-	b.rbuf = b.rbuf[:0]
-	b.whdr = nil
-	b.wbuf = nil
-	bufferPool.Put(b)
-	return e
-}
-
-// === unimplemented ===
-
-func (b *buffer) Read(p []byte) (n int, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) Write(p []byte) (n int, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) Peek(n int) (buf []byte, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) Skip(n int) (err error) {
-	panic("implement me")
-}
-
-func (b *buffer) ReadableLen() (n int) {
-	panic("implement me")
-}
-
-func (b *buffer) ReadLen() (n int) {
-	panic("implement me")
-}
-
-func (b *buffer) ReadString(n int) (s string, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) ReadBinary(n int) (p []byte, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) Malloc(n int) (buf []byte, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) MallocLen() (length int) {
-	panic("implement me")
-}
-
-func (b *buffer) WriteString(s string) (n int, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) WriteBinary(data []byte) (n int, err error) {
-	panic("implement me")
-}
-
-func (b *buffer) NewBuffer() remote.ByteBuffer {
-	panic("implement me")
-}
-
-func (b *buffer) AppendBuffer(buf remote.ByteBuffer) (err error) {
-	panic("implement me")
-}
-
-func (b *buffer) Bytes() (buf []byte, err error) {
-	panic("implement me")
-}
+//
+//type buffer struct {
+//	conn       grpcConn
+//	rbuf       []byte // for read
+//	whdr, wbuf []byte // for write
+//}
+//
+//var (
+//	_ remote.ByteBuffer = (*buffer)(nil)
+//	_ remote.FrameWrite = (*buffer)(nil)
+//)
+//
+//var bufferPool = sync.Pool{
+//	New: func() interface{} {
+//		return &buffer{
+//			rbuf: make([]byte, 0, 4096),
+//			wbuf: nil,
+//			whdr: nil,
+//		}
+//	},
+//}
+//
+//func newBuffer(conn grpcConn) *buffer {
+//	buf := bufferPool.Get().(*buffer)
+//	buf.conn = conn
+//	return buf
+//}
+//
+//func (b *buffer) growRbuf(n int) {
+//	capacity := cap(b.rbuf)
+//	if capacity >= n {
+//		return
+//	}
+//	buf := make([]byte, 0, 2*capacity+n)
+//	b.rbuf = buf
+//}
+//
+//func (b *buffer) Next(n int) (p []byte, err error) {
+//	b.growRbuf(n)
+//	_, err = b.conn.Read(b.rbuf[:n])
+//	if err != nil {
+//		return nil, err
+//	}
+//	return b.rbuf[:n], nil
+//}
+//
+//func (b *buffer) WriteHeader(buf []byte) (err error) {
+//	b.whdr = buf
+//	return nil
+//}
+//
+//func (b *buffer) WriteData(buf []byte) (err error) {
+//	b.wbuf = buf
+//	return nil
+//}
+//
+//func (b *buffer) Flush() (err error) {
+//	_, err = b.conn.WriteFrame(b.whdr, b.wbuf)
+//	b.whdr = nil
+//	b.wbuf = nil
+//	return err
+//}
+//
+//func (b *buffer) Release(e error) (err error) {
+//	b.rbuf = b.rbuf[:0]
+//	b.whdr = nil
+//	b.wbuf = nil
+//	bufferPool.Put(b)
+//	return e
+//}
+//
+//// === unimplemented ===
+//
+//func (b *buffer) Read(p []byte) (n int, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) Write(p []byte) (n int, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) Peek(n int) (buf []byte, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) Skip(n int) (err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) ReadableLen() (n int) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) ReadLen() (n int) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) ReadString(n int) (s string, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) ReadBinary(n int) (p []byte, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) Malloc(n int) (buf []byte, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) MallocLen() (length int) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) WriteString(s string) (n int, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) WriteBinary(data []byte) (n int, err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) NewBuffer() remote.ByteBuffer {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) AppendBuffer(buf remote.ByteBuffer) (err error) {
+//	panic("implement me")
+//}
+//
+//func (b *buffer) Bytes() (buf []byte, err error) {
+//	panic("implement me")
+//}

@@ -19,8 +19,7 @@ package protobuf
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
-
+	"github.com/bytedance/gopkg/lang/mcache"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/cloudwego/kitex/pkg/protocol/bprotoc"
@@ -46,23 +45,25 @@ func NewGRPCCodec() remote.Codec {
 }
 
 func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remote.ByteBuffer) (err error) {
-	writer, ok := out.(remote.FrameWrite)
-	if !ok {
-		return fmt.Errorf("output buffer must implement FrameWrite")
-	}
-	var header [5]byte
 	var data []byte
 	switch t := message.Data().(type) {
 	case bprotoc.FastWrite:
 		// TODO: reuse data buffer when we can free it safely
-		data = make([]byte, t.Size())
-		t.FastWrite(data)
+		l := t.Size()
+		//wbuf, _ := out.Malloc(l + 5)
+		wbuf := mcache.Malloc(l + 5)
+		//wbuf := make([]byte, l+5)
+		t.FastWrite(wbuf[5:])
+		binary.BigEndian.PutUint32(wbuf[1:5], uint32(l))
+		out.Write(wbuf)
+		return nil
 	case marshaler:
 		// TODO: reuse data buffer when we can free it safely
-		data = make([]byte, t.Size())
-		if _, err = t.MarshalTo(data); err != nil {
-			return err
-		}
+		l := t.Size()
+		wbuf, _ := out.Malloc(l + 5)
+		_, err = t.MarshalTo(wbuf[5:])
+		binary.BigEndian.PutUint32(wbuf[1:5], uint32(l))
+		return err
 	case protobufV2MsgCodec:
 		data, err = t.XXX_Marshal(nil, true)
 		if err != nil {
@@ -79,11 +80,11 @@ func (c *grpcCodec) Encode(ctx context.Context, message remote.Message, out remo
 			return err
 		}
 	}
-	if err = writer.WriteData(data); err != nil {
-		return err
-	}
-	binary.BigEndian.PutUint32(header[1:5], uint32(len(data)))
-	return writer.WriteHeader(header[:])
+	l := len(data)
+	wbuf, _ := out.Malloc(l + 5)
+	binary.BigEndian.PutUint32(wbuf[1:5], uint32(l))
+	copy(wbuf[5:], data)
+	return nil
 }
 
 func (c *grpcCodec) Decode(ctx context.Context, message remote.Message, in remote.ByteBuffer) (err error) {
