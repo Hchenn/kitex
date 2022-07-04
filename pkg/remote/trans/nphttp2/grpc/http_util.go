@@ -684,6 +684,7 @@ func (w *bufWriter) Flush() error {
 	if w.onFlush != nil {
 		w.onFlush()
 	}
+	println("len send = ", w.offset, ", ", w.offset/1024, "kb")
 	_, w.err = w.conn.Write(w.buf[:w.offset])
 	w.offset = 0
 	return w.err
