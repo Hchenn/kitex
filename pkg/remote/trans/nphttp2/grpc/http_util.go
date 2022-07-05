@@ -34,13 +34,15 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cloudwego/kitex/pkg/klog"
-	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
-	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
+	"github.com/cloudwego/netpoll"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/cloudwego/kitex/pkg/klog"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 )
 
 const (
@@ -617,13 +619,11 @@ type framer struct {
 }
 
 func newFramer(conn net.Conn, writeBufferSize, readBufferSize, maxHeaderListSize uint32) *framer {
-	w := newBufWriter(conn, int(writeBufferSize))
-
 	var r io.Reader = conn
 	if readBufferSize > 0 {
 		r = bufio.NewReaderSize(r, int(readBufferSize))
 	}
-
+	w := newBufWriter(conn.(netpoll.Connection).Writer(), int(writeBufferSize))
 	fr := &framer{
 		writer: w,
 		Framer: http2.NewFramer(w, r),
@@ -641,17 +641,15 @@ type bufWriter struct {
 	buf       []byte
 	offset    int
 	batchSize int
-	conn      net.Conn
+	writer    netpoll.Writer
 	err       error
-
-	onFlush func()
 }
 
-func newBufWriter(conn net.Conn, batchSize int) *bufWriter {
+func newBufWriter(writer netpoll.Writer, batchSize int) *bufWriter {
 	return &bufWriter{
 		buf:       make([]byte, batchSize*2),
 		batchSize: batchSize,
-		conn:      conn,
+		writer:    writer,
 	}
 }
 
@@ -660,7 +658,8 @@ func (w *bufWriter) Write(b []byte) (n int, err error) {
 		return 0, w.err
 	}
 	if w.batchSize == 0 { // buffer has been disabled.
-		return w.conn.Write(b)
+		n, _ = w.writer.WriteBinary(b)
+		return n, w.writer.Flush()
 	}
 	for len(b) > 0 {
 		nn := copy(w.buf[w.offset:], b)
@@ -681,10 +680,8 @@ func (w *bufWriter) Flush() error {
 	if w.offset == 0 {
 		return nil
 	}
-	if w.onFlush != nil {
-		w.onFlush()
-	}
-	_, w.err = w.conn.Write(w.buf[:w.offset])
+	w.writer.WriteBinary(w.buf[:w.offset])
+	w.err = w.writer.Flush()
 	w.offset = 0
 	return w.err
 }
