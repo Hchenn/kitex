@@ -43,15 +43,25 @@ type itemNode struct {
 	next *itemNode
 }
 
+// pre -> head -> tail
 type itemList struct {
+	pre  *itemNode
 	head *itemNode
 	tail *itemNode
 }
 
 func (il *itemList) enqueue(i interface{}) {
-	n := &itemNode{it: i}
+	n := il.pre
+	if il.pre == il.head {
+		n = &itemNode{}
+	} else {
+		il.pre = il.pre.next
+		n.next = nil
+	}
+
+	n.it = i
 	if il.tail == nil {
-		il.head, il.tail = n, n
+		il.pre, il.head, il.tail = n, n, n
 		return
 	}
 	il.tail.next = n
@@ -69,6 +79,7 @@ func (il *itemList) dequeue() interface{} {
 		return nil
 	}
 	i := il.head.it
+	il.head.it = nil
 	il.head = il.head.next
 	if il.head == nil {
 		il.tail = nil
@@ -78,7 +89,7 @@ func (il *itemList) dequeue() interface{} {
 
 func (il *itemList) dequeueAll() *itemNode {
 	h := il.head
-	il.head, il.tail = nil, nil
+	il.pre, il.head, il.tail = nil, nil, nil
 	return h
 }
 
