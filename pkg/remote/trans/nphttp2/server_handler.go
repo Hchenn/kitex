@@ -96,9 +96,8 @@ func (t *svrTransHandler) OnRead(ctx context.Context, conn net.Conn) error {
 
 	tr.HandleStreams(func(s *grpcTransport.Stream) {
 		gofunc.GoFunc(ctx, func() {
-			ri := svrTrans.pool.Get().(rpcinfo.RPCInfo)
-			defer svrTrans.pool.Put(ri)
-			rCtx := rpcinfo.NewCtxWithRPCInfo(s.Context(), ri)
+			rCtx := s.Context()
+			ri := rpcinfo.GetRPCInfo(rCtx)
 
 			// set grpc transport flag before execute metahandler
 			rpcinfo.AsMutableRPCConfig(ri.Config()).SetTransportProtocol(transport.GRPC)
@@ -197,8 +196,7 @@ type svrTransKey int
 const ctxKeySvrTransport svrTransKey = 1
 
 type SvrTrans struct {
-	tr   grpcTransport.ServerTransport
-	pool *sync.Pool // value is rpcInfo
+	tr grpcTransport.ServerTransport
 }
 
 // 新连接建立时触发，主要用于服务端，对应 netpoll onPrepare
@@ -206,19 +204,18 @@ func (t *svrTransHandler) OnActive(ctx context.Context, conn net.Conn) (context.
 	// set readTimeout to infinity to avoid streaming break
 	// use keepalive to check the health of connection
 	conn.(netpoll.Connection).SetReadTimeout(grpcTransport.Infinity)
-
-	tr, err := grpcTransport.NewServerTransport(ctx, conn.(netpoll.Connection), t.opt.GRPCCfg)
+	ctxPool := sync.Pool{
+		New: func() interface{} {
+			// init rpcinfo
+			_, ctx := t.opt.InitRPCInfoFunc(ctx, conn.RemoteAddr())
+			return ctx
+		},
+	}
+	tr, err := grpcTransport.NewServerTransport(ctx, conn.(netpoll.Connection), t.opt.GRPCCfg, &ctxPool)
 	if err != nil {
 		return nil, err
 	}
-	pool := &sync.Pool{
-		New: func() interface{} {
-			// init rpcinfo
-			ri, _ := t.opt.InitRPCInfoFunc(ctx, conn.RemoteAddr())
-			return ri
-		},
-	}
-	ctx = context.WithValue(ctx, ctxKeySvrTransport, &SvrTrans{tr: tr, pool: pool})
+	ctx = context.WithValue(ctx, ctxKeySvrTransport, &SvrTrans{tr: tr})
 	return ctx, nil
 }
 

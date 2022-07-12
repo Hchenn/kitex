@@ -111,11 +111,12 @@ type http2Server struct {
 	idle time.Time
 
 	bufferPool *bufferPool
+	ctxPool    *sync.Pool // reuse rpcinfo
 }
 
 // newHTTP2Server constructs a ServerTransport based on HTTP2. ConnectionError is
 // returned if something goes wrong.
-func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig) (_ ServerTransport, err error) {
+func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig, ctxPool *sync.Pool) (_ ServerTransport, err error) {
 	maxHeaderListSize := defaultServerMaxHeaderListSize
 	if config.MaxHeaderListSize != nil {
 		maxHeaderListSize = *config.MaxHeaderListSize
@@ -214,6 +215,7 @@ func newHTTP2Server(ctx context.Context, conn net.Conn, config *ServerConfig) (_
 		idle:              time.Now(),
 		initialWindowSize: int32(iwz),
 		bufferPool:        newBufferPool(),
+		ctxPool:           ctxPool,
 	}
 	t.controlBuf = newControlBuffer(t.done)
 	if dynamicWindow {
@@ -308,10 +310,16 @@ func (t *http2Server) operateHeaders(frame *grpcframe.MetaHeadersFrame, handle f
 		// s is just created by the caller. No lock needed.
 		s.state = streamReadDone
 	}
+
+	ctx := t.ctx
+	if t.ctxPool != nil {
+		ctx = t.ctxPool.Get().(context.Context)
+		defer t.ctxPool.Put(ctx)
+	}
 	if state.data.timeoutSet {
-		s.ctx, s.cancel = context.WithTimeout(t.ctx, state.data.timeout)
+		s.ctx, s.cancel = context.WithTimeout(ctx, state.data.timeout)
 	} else {
-		s.ctx, s.cancel = context.WithCancel(t.ctx)
+		s.ctx, s.cancel = context.WithCancel(ctx)
 	}
 	// Attach the received metadata to the context.
 	if len(state.data.mdata) > 0 {

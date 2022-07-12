@@ -572,7 +572,7 @@ type ConnectOptions struct {
 
 // NewServerTransport creates a ServerTransport with conn or non-nil error
 // if it fails.
-func NewServerTransport(ctx context.Context, conn net.Conn, cfg *ServerConfig) (ServerTransport, error) {
+func NewServerTransport(ctx context.Context, conn net.Conn, cfg *ServerConfig, ctxPool *sync.Pool) (ServerTransport, error) {
 	return newHTTP2Server(ctx, conn, cfg)
 }
 
